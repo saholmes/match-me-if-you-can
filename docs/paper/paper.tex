@@ -1,0 +1,246 @@
+% Match Me If You Can: Privacy-Preserving Registration via STARK-STIR
+% Paper outline / draft scaffold.
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{microtype}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{siunitx}
+\sisetup{group-separator={,}, group-minimum-digits=4}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{algorithm, algpseudocode}
+
+\hypersetup{
+  colorlinks   = true,
+  linkcolor    = blue!50!black,
+  citecolor    = blue!50!black,
+  urlcolor     = blue!50!black,
+}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{definition}{Definition}
+\newtheorem{property}{Property}
+
+\title{
+  Match Me If You Can: \\
+  Privacy-Preserving Registration via STARK-STIR Proofs over PII
+}
+\author{Stephen A. Holmes \\
+  University of Surrey \\
+  \texttt{s.a.holmes@surrey.ac.uk}}
+\date{2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+% A precise four-axis claim — keep tight after the empirical numbers come in.
+A typical website registration flow stores user attributes — date of
+birth, country, postcode, email, income — verbatim in a database.  When
+that database is breached, the leaked records are linkable against
+publicly-available auxiliary data (electoral rolls, breach corpora,
+social-media exports), and the operator faces UK / EU GDPR fines
+under Art.~83.  We replace the verbatim attribute columns with
+\textbf{STARK-STIR proofs of attribute predicates} — range proofs and
+set-membership proofs constructed using the post-quantum,
+no-trusted-setup STARK-STIR protocol of \cite{stark-stir}.  The server
+answers every business-relevant query
+(``authorised?''~``in~the~EU?''~``over~18?'') by re-verifying the
+stored proof; the underlying value is never present in the database to
+be leaked.  We empirically quantify four cost / benefit axes:
+storage (bytes per user), compute (prove and verify latency), breach
+unlinkability (re-identification rate against an auxiliary database),
+and regulatory cost (expected GDPR fine differential, weighted by
+per-year breach probability).  All numbers are reproducible from the
+open-source reference implementation~\cite{mmiyc-impl}.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+% Motivation:
+% - Industrial-scale data breaches are routine; ICO publishes ~150 fineable
+%   incidents per year in the UK alone.
+% - GDPR Art. 32 mandates "appropriate technical and organisational
+%   measures"; Art. 33-34 mandate notification if the data is
+%   "intelligible to unauthorised persons"; Art. 83 fines scale up to
+%   €20M / 4% global turnover.
+% - Pseudonymisation (Art. 4(5)) is endorsed but typically reduces to
+%   "encrypt the column" — which leaks under key compromise.
+% - Storing PROOFS instead of values is a stronger pseudonymisation:
+%   no key, nothing to leak.
+
+This paper makes the case that for many attributes captured at
+registration, the operator does not need the value — they need a
+\emph{predicate over the value}.  ``Are you over 18?''~is a one-bit
+question; storing the full date of birth to answer it is
+over-collection.  We show that replacing verbatim PII with STARK-STIR
+proofs of the relevant predicates reduces breach-time exposure to
+informational zero (in the cryptographic sense) and produces a
+quantifiable reduction in expected regulatory cost.
+
+\paragraph{Contributions.}
+
+\begin{enumerate}
+  \item A \textbf{registration architecture} that replaces verbatim
+        PII storage with on-disk STARK-STIR proofs of attribute
+        predicates (\S\ref{sec:design}).
+  \item A set of \textbf{AIRs} for common registration predicates —
+        age range, country set membership, postcode prefix membership,
+        email-domain membership, income bracket — built on the
+        STARK-STIR primitives of \cite{stark-stir}
+        (\S\ref{sec:airs}).
+  \item An \textbf{empirical four-axis evaluation} on a synthetic
+        \num{100000}-user population: storage, compute, breach
+        unlinkability, and regulatory cost
+        (\S\ref{sec:eval}).
+  \item A \textbf{breach simulation} that quantifies re-identification
+        rate under both scenarios against a public auxiliary database,
+        and a \textbf{regulatory-cost analysis} that translates that
+        rate into an expected GDPR Art. 83 fine differential.
+\end{enumerate}
+
+\section{Background}
+\label{sec:background}
+
+% STARK-STIR primer. Cite the original paper / prover crate.
+% AIR / DEEP-ALI overview at the level needed to read sec 4.
+% UK GDPR / EU GDPR / ICO context.
+
+\section{Threat Model and Design Goals}
+\label{sec:threat}
+
+% Lift / cite docs/threat-model.md.
+% Adversary, assets, security claim (informal), out-of-scope.
+
+\section{System Design}
+\label{sec:design}
+
+% Two scenarios sharing the same UX.
+% Scenario A: PII columns in DB.
+% Scenario B: proof bytes + commitment + small metadata.
+% Server endpoints: /register (accept proofs), /verify-* (predicate-specific).
+% Why server-side prover is acceptable for the Phase-1 paper, with the
+%  client-WASM prover noted as Phase 2 future work.
+
+\section{AIRs for Registration Predicates}
+\label{sec:airs}
+
+\subsection{Age range}
+\label{sec:air-age}
+
+% Range proof: prove dob represents an integer in a public range,
+% via DOB-as-field-element + degree-bound polynomial enforcing that
+% age = (today - dob) / 365 lies in [min, max].
+
+\subsection{Country set membership}
+\label{sec:air-country}
+
+% Merkle tree over canonical EU country codes; STARK proof of
+% inclusion + hash binding.
+
+\subsection{Postcode prefix membership}
+\label{sec:air-postcode}
+
+% Set-membership over UK postcode area codes (e.g., outward-code first
+% two characters), using the same Merkle pattern.
+
+\subsection{Email-domain membership}
+\label{sec:air-email}
+
+% Set-membership over allowed mail providers; useful for "block
+% temporary mail provider" without storing the full address.
+
+\subsection{Income bracket range}
+\label{sec:air-income}
+
+% Range proof on declared income, decomposed into bracket boundaries.
+
+\section{Implementation}
+\label{sec:impl}
+
+% Rust workspace.  Path-dependency on stark-stir-swarm.
+% mmiyc-air, mmiyc-prover, mmiyc-verifier, mmiyc-server, mmiyc-bench.
+% sqlx + Postgres for durable storage of proof bytes.
+% axum web server.
+% WASM prover (frontend/) noted as future phase.
+
+\section{Evaluation}
+\label{sec:eval}
+
+\subsection{Storage cost}
+\label{sec:eval-storage}
+
+% Bytes per user, broken down by attribute.
+% Plot vs. n_users for both scenarios.
+% Headline: B-bytes per proof × N_attributes vs. raw PII
+% (~200-500 bytes / user).
+
+\subsection{Compute cost}
+\label{sec:eval-compute}
+
+% Prove time per attribute (one-shot at registration).
+% Verify time per attribute (per-query, hot path).
+% End-to-end registration latency (sum + DB write).
+% Plot proof time vs. attribute size.
+
+\subsection{Breach simulation}
+\label{sec:eval-breach}
+
+% Methodology:
+%   - Synthetic auxiliary DB modelled on UK electoral roll (or a
+%     publicly-licensable equivalent).
+%   - For each user in the breached DB, attempt to match in the aux DB.
+%   - Match criterion: k-attribute coincidence (postcode + DOB + sex
+%     etc.).
+% Result A (PII): re-identification rate per number of attributes.
+% Result B (Proofs): re-identification rate is by construction zero
+%   for the proven attributes.
+
+\subsection{Regulatory cost}
+\label{sec:eval-regulatory}
+
+% Take ICO / EU DPA fine matrices.
+% Multiply by per-year breach probability (industry stats:
+% ~3-7 % per company-year).
+% Compute expected annual fine reduction.
+% Compare to amortised proof infrastructure cost (compute + storage).
+
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+% Right to be forgotten interactions.
+% Predicate completeness — what queries CAN'T be answered with
+%   stored proofs alone?
+% Active compromise (already in threat model).
+% Server-side prover assumption (Phase-1 simplification).
+
+\section{Related Work}
+\label{sec:related}
+
+% Anonymous credentials (Camenisch-Lysyanskaya, BBS+, Idemix).
+% W3C Verifiable Credentials.
+% Privacy Pass.
+% Anonymous tokens / private set membership.
+% Differential privacy for stored attributes.
+% Selective disclosure / SD-JWT.
+% Specifically distinguish: storage-side proof persistence, not
+%  user-side credential storage.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}

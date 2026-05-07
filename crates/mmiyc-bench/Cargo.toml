@@ -1,0 +1,23 @@
+[package]
+name        = "mmiyc-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Storage / latency / breach harness for Match-Me-If-You-Can"
+
+[[bin]]
+name = "mmiyc-bench"
+path = "src/main.rs"
+
+[dependencies]
+mmiyc-air      = { path = "../mmiyc-air" }
+mmiyc-prover   = { path = "../mmiyc-prover" }
+mmiyc-verifier = { path = "../mmiyc-verifier" }
+
+clap        = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+anyhow      = { workspace = true }
+rand        = { workspace = true }
+hex         = { workspace = true }

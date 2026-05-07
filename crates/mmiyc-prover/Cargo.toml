@@ -1,0 +1,18 @@
+[package]
+name        = "mmiyc-prover"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "STARK proof generation wrapper for Match-Me-If-You-Can"
+
+[dependencies]
+mmiyc-air = { path = "../mmiyc-air" }
+
+deep_ali       = { workspace = true }
+ark-ff         = { workspace = true }
+ark-goldilocks = { workspace = true }
+
+serde     = { workspace = true }
+thiserror = { workspace = true }
+anyhow    = { workspace = true }

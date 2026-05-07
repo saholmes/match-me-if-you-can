@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "crates/mmiyc-air",      # Algebraic Intermediate Representations for PII attributes
+    "crates/mmiyc-prover",   # proof generation (server-side initially; WASM target as Phase 2)
+    "crates/mmiyc-verifier", # native proof verification
+    "crates/mmiyc-server",   # axum HTTP service: /register, /verify-*
+    "crates/mmiyc-bench",    # storage / latency / breach harness
+]
+
+[workspace.package]
+version  = "0.1.0"
+edition  = "2021"
+license  = "Apache-2.0"
+authors  = ["Stephen A. Holmes <s.a.holmes@surrey.ac.uk>"]
+homepage = "https://github.com/saholmes/match-me-if-you-can"
+description = "Privacy-preserving registration via STARK-STIR proofs over PII"
+
+[workspace.dependencies]
+# --- STARK-STIR core (path-dependency on the local stark-stir-swarm checkout)
+# These mirror the workspace deps in stark-stir-swarm so versions stay in lock-step.
+deep_ali       = { path = "../stark-stir-swarm/crates/deep_ali" }
+# Upstream `hash` crate requires one of the `sha3-256/384/512` features
+# to compile.  We pick `sha3-256` to match `stark-stir-swarm/swarm-dns`.
+hash           = { path = "../stark-stir-swarm/crates/hash",       default-features = false, features = ["sha3-256"] }
+merkle         = { path = "../stark-stir-swarm/crates/merkle",     default-features = false, features = ["sha3-256"] }
+transcript     = { path = "../stark-stir-swarm/crates/transcript", default-features = false, features = ["sha3-256"] }
+ark-goldilocks = { path = "../stark-stir-swarm/crates/ark-goldilocks", version = "0.1.0" }
+public-inputs  = { path = "../stark-stir-swarm/crates/public-inputs" }
+
+# --- Cryptographic + math support (ark-* lifted from stark-stir-swarm's workspace.deps)
+ark-ff         = { version = "0.4.2" }
+ark-bls12-381  = "0.4.0"
+ark-poly       = "0.4.2"
+ark-serialize  = "0.4.2"
+sha3           = "0.10"
+blake3         = "1"
+rand           = "0.8"
+
+# --- Serialisation
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex        = "0.4"
+bincode    = "1.3"
+
+# --- Web stack (server crate only)
+axum   = { version = "0.7", features = ["macros"] }
+tokio  = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "signal", "time", "sync"] }
+tower  = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# --- Storage (server crate)
+sqlx       = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "json", "macros"] }
+
+# --- Tracing / logs
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- Errors
+anyhow     = "1"
+thiserror  = "1"
+
+# --- CLI / bench
+clap       = { version = "4", features = ["derive"] }
+criterion  = "0.5"
+
+# --- Testing
+proptest   = "1"
+
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+debug         = false
+
+[profile.bench]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+debug         = false

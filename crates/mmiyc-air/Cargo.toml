@@ -1,0 +1,27 @@
+[package]
+name        = "mmiyc-air"
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+authors.workspace      = true
+description = "Algebraic Intermediate Representations for Match-Me-If-You-Can predicate proofs"
+
+[dependencies]
+# STARK-STIR primitives
+deep_ali       = { workspace = true }
+hash           = { workspace = true }
+merkle         = { workspace = true }
+transcript     = { workspace = true }
+ark-goldilocks = { workspace = true }
+
+# Math + serialisation
+ark-ff        = { workspace = true }
+ark-serialize = { workspace = true }
+serde         = { workspace = true }
+sha3          = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
