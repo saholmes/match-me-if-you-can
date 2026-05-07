@@ -22,3 +22,8 @@ serde_json  = { workspace = true }
 anyhow      = { workspace = true }
 rand        = { workspace = true }
 hex         = { workspace = true }
+
+# Real STARK prover, used by the `bench` sub-command.
+deep_ali       = { workspace = true }
+ark-goldilocks = { workspace = true }
+ark-ff         = { workspace = true }

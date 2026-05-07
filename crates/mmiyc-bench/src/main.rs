@@ -11,8 +11,10 @@
 //!                      --aux-overlap 5000 --aux-extra 50000
 //!     -- run linkage-attack re-identification simulation
 //!
-//!   mmiyc-bench bench --scenario both --n 1000
-//!     -- (stub until deep_ali wiring lands)
+//!   mmiyc-bench bench --air fibonacci --log-rows 5 --iters 20
+//!     -- real STARK prove + verify against deep_ali, capturing
+//!        proof size, prove ms, verify ms.  Used to anchor the
+//!        compute and storage tables in §6 of the paper.
 //! ```
 
 use std::path::PathBuf;
@@ -117,17 +119,43 @@ enum Cmd {
         unintelligibility_discount: f64,
     },
 
-    /// (Stub until `deep_ali` wiring lands.)
+    /// Real STARK-STIR prove + verify against deep_ali.  The age- and
+    /// country-AIRs in `mmiyc-air` are not yet plug-in-able into
+    /// deep_ali (deep_ali_merge_general dispatches over a closed
+    /// AirType enum), so the bench drives one or more of the
+    /// existing AIRs as a structural proxy:
+    ///
+    ///   * `fibonacci`   — w=2, k=1, deg-2 transitions.  Tightest
+    ///                     lower-bound proxy for an age range AIR
+    ///                     (which has w=2 boolean cols + 2 deg-2
+    ///                     constraints).
+    ///   * `hash-rollup` — w=4, k=3, deg-2.  Upper-bound proxy.
+    ///   * `all`         — both, useful for the paper's compute table.
+    ///
+    /// Proof bytes and timings are reported with median of `iters`
+    /// runs to dampen wall-clock jitter.
     Bench {
-        #[arg(long, value_enum, default_value_t = ScenarioArg::Both)]
-        scenario: ScenarioArg,
-        #[arg(long, default_value_t = 1000)]
-        n: usize,
+        /// Which AIR to drive.
+        #[arg(long, value_enum, default_value_t = AirArg::All)]
+        air: AirArg,
+        /// log2 of trace rows.  Defaults to a small ladder
+        /// (5..=8 = {32, 64, 128, 256}) so we cover the regime
+        /// the registration AIRs would actually run at.
+        #[arg(long, value_delimiter = ',')]
+        log_rows: Option<Vec<u32>>,
+        /// How many prove+verify iterations per row count.
+        /// Median across these is reported.
+        #[arg(long, default_value_t = 20)]
+        iters: usize,
+        /// Number of FRI queries.  Default 54 mirrors §III of the
+        /// stark-stir paper (~128-bit security with conservative gap).
+        #[arg(long, default_value_t = 54)]
+        queries: usize,
     },
 }
 
-#[derive(clap::ValueEnum, Debug, Clone)]
-enum ScenarioArg { Pii, Proofs, Both }
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum AirArg { Fibonacci, HashRollup, All }
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -174,11 +202,142 @@ fn main() -> Result<()> {
             Ok(())
         }
 
-        Cmd::Bench { scenario, n } => {
-            eprintln!("[stub — pending deep_ali wiring] bench scenario={scenario:?} n={n}");
-            Ok(())
+        Cmd::Bench { air, log_rows, iters, queries } => {
+            let logs = log_rows.unwrap_or_else(|| vec![5, 6, 7, 8]);
+            run_bench(air, &logs, iters, queries)
         }
     }
+}
+
+// ─── real STARK bench ─────────────────────────────────────────────
+
+mod stark_bench {
+    //! Direct driver for `deep_ali_merge_general` + `deep_fri_prove` /
+    //! `deep_fri_verify` at small trace sizes.
+
+    use std::time::Instant;
+
+    use ark_goldilocks::Goldilocks as F;
+    use deep_ali::{
+        air_workloads::{build_execution_trace, AirType},
+        deep_ali_merge_general,
+        fri::{
+            deep_fri_proof_size_bytes, deep_fri_prove, deep_fri_verify,
+            DeepFriParams, FriDomain,
+        },
+        sextic_ext::SexticExt,
+        trace_import::lde_trace_columns,
+    };
+
+    /// Calibration mirroring §III of the stark-stir paper.
+    /// 1/ρ₀ = 32 blowup, sextic extension, query count from caller.
+    pub const BLOWUP: usize = 32;
+    pub const SEED_Z: u64 = 0xDEEF_BAAD;
+    type Ext = SexticExt;
+
+    /// One run of the prove+verify pipeline.  Returns the wall-clock
+    /// timings and proof byte count.
+    pub struct Sample {
+        pub setup_ms: f64,
+        pub prove_ms: f64,
+        pub verify_ms: f64,
+        pub proof_bytes: usize,
+    }
+
+    fn make_schedule(n0: usize) -> Vec<usize> {
+        // arity-2 (binary FRI) — matches the simplest, most portable
+        // schedule and is the right baseline for a WASM-feasibility
+        // estimate (no STIR-specific tricks).
+        vec![2usize; n0.trailing_zeros() as usize]
+    }
+
+    fn combination_coeffs(num: usize) -> Vec<F> {
+        (0..num).map(|i| F::from((i + 1) as u64)).collect()
+    }
+
+    pub fn run_one(air: AirType, n_trace: usize, num_queries: usize) -> Sample {
+        let n0 = n_trace * BLOWUP;
+        let domain = FriDomain::new_radix2(n0);
+
+        let t_setup = Instant::now();
+        let trace = build_execution_trace(air, n_trace);
+        let lde   = lde_trace_columns(&trace, n_trace, BLOWUP)
+            .expect("LDE failed");
+        let coeffs = combination_coeffs(air.num_constraints());
+        let (c_eval, _) = deep_ali_merge_general(
+            &lde, &coeffs, air, domain.omega, n_trace, BLOWUP,
+        );
+        let setup_ms = t_setup.elapsed().as_secs_f64() * 1e3;
+
+        let params = DeepFriParams {
+            schedule: make_schedule(n0),
+            r: num_queries,
+            seed_z: SEED_Z,
+            coeff_commit_final: true,
+            d_final: 1,
+            stir: false,
+            s0: num_queries,
+            public_inputs_hash: None,
+        };
+
+        let t_prove = Instant::now();
+        let proof = deep_fri_prove::<Ext>(c_eval, domain, &params);
+        let prove_ms = t_prove.elapsed().as_secs_f64() * 1e3;
+
+        let t_verify = Instant::now();
+        let ok = deep_fri_verify::<Ext>(&params, &proof);
+        let verify_ms = t_verify.elapsed().as_secs_f64() * 1e3;
+        assert!(ok, "verify failed at n_trace = {n_trace}");
+
+        let proof_bytes = deep_fri_proof_size_bytes::<Ext>(&proof, false);
+        Sample { setup_ms, prove_ms, verify_ms, proof_bytes }
+    }
+
+    /// Run `iters` prove+verify cycles and return the median sample.
+    pub fn median(air: AirType, n_trace: usize, num_queries: usize, iters: usize) -> Sample {
+        let mut samples: Vec<Sample> = (0..iters)
+            .map(|_| run_one(air, n_trace, num_queries))
+            .collect();
+        samples.sort_by(|a, b| a.prove_ms.partial_cmp(&b.prove_ms).unwrap());
+        samples.swap_remove(iters / 2)
+    }
+}
+
+fn run_bench(air: AirArg, log_rows: &[u32], iters: usize, queries: usize) -> Result<()> {
+    use deep_ali::air_workloads::AirType;
+
+    let airs: Vec<(&str, AirType)> = match air {
+        AirArg::Fibonacci  => vec![("Fibonacci",  AirType::Fibonacci)],
+        AirArg::HashRollup => vec![("HashRollup", AirType::HashRollup)],
+        AirArg::All        => vec![
+            ("Fibonacci",  AirType::Fibonacci),
+            ("HashRollup", AirType::HashRollup),
+        ],
+    };
+
+    println!("Match-Me-If-You-Can — real STARK bench (deep_ali backend)");
+    println!("Calibration: 1/rho_0 = 32 blowup, sextic extension, {} queries, arity-2 FRI", queries);
+    println!("Median of {} prove+verify cycles per row count.", iters);
+    println!();
+    println!("{:<11} {:>6} {:>4} {:>4} {:>10} {:>10} {:>10} {:>14}",
+             "AIR", "n_rows", "w", "k", "setup_ms", "prove_ms", "verify_ms", "proof_bytes");
+    for (label, air) in &airs {
+        let w = air.width();
+        let k = air.num_constraints();
+        for &log_n in log_rows {
+            let n_trace = 1usize << log_n;
+            let s = stark_bench::median(*air, n_trace, queries, iters);
+            println!("{:<11} {:>6} {:>4} {:>4} {:>10.2} {:>10.2} {:>10.2} {:>14}",
+                     label, n_trace, w, k,
+                     s.setup_ms, s.prove_ms, s.verify_ms, s.proof_bytes);
+        }
+    }
+    println!();
+    println!("Note: the Fibonacci AIR (w=2, k=1) is a tight lower-bound proxy");
+    println!("for an age-range AIR (w=2 boolean cols + 2 deg-2 transitions);");
+    println!("HashRollup (w=4, k=3) is the upper bound.  The real range AIR");
+    println!("would land between these two rows at the same n_trace.");
+    Ok(())
 }
 
 // ─── storage ───────────────────────────────────────────────────────

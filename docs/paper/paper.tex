@@ -560,7 +560,7 @@ script that drives the workspace end\nobreakdash-to\nobreakdash-end:
 {\small
 \begin{verbatim}
   cargo run -p mmiyc-bench -- generate    --n 10000 --uk-only
-  cargo run -p mmiyc-bench -- storage     --proof-bytes 6500
+  cargo run -p mmiyc-bench -- bench       --air all --iters 20
   cargo run -p mmiyc-bench -- breach      --aux-overlap 5000  \
                                           --aux-extra 50000
   cargo run -p mmiyc-bench -- regulatory  --aux-overlap 5000  \
@@ -603,56 +603,151 @@ Table~\ref{tab:storage} reports the per\nobreakdash-user storage
 under each scenario.  PII storage is computed from the canonical
 CSV byte length per record (\texttt{user\_id}, \texttt{dob\_days},
 \texttt{country\_code}, \texttt{postcode\_prefix},
-\texttt{email\_domain}, \texttt{income\_pence}, \texttt{sex});
-proof storage assumes $6{,}500$ bytes per attribute, which is
-conservative for a STARK proof of a $32$\nobreakdash-bit range
-constraint at $128$\nobreakdash-bit security under
-$\mathrm{BCH}(511, 259, t=30)$\nobreakdash-class
-parameters~\cite{stark-stir,starks}.  Two attributes are proven
-per user (age + country) plus a fixed $80$\nobreakdash-byte metadata
-overhead (commitment + policy ID + user ID reference).
+\texttt{email\_domain}, \texttt{income\_pence}, \texttt{sex}).
+Proof storage is the \emph{measured} size of a single FRI proof
+emitted by the upstream \texttt{deep\_ali}~\cite{stark-stir}
+backend at $128$\nobreakdash-bit security
+($1/\rho_0 = 32$ blowup, sextic extension over Goldilocks,
+$54$ queries, arity\nobreakdash-2 binary FRI), at the smallest
+trace size compatible with our AIRs ($n_\mathrm{trace} = 32$
+rows): \num{270576} bytes per attribute.  Two attributes are
+proven per user (age + country) plus a fixed
+$80$\nobreakdash-byte metadata overhead (commitment + policy ID +
+user ID reference).
+
+The proof\nobreakdash-byte number is FRI\nobreakdash-query
+dominated: the linear combination of $54$ queries against an
+LDE\nobreakdash-domain Merkle commitment over a sextic\nobreakdash-extension
+field accounts for $> 90\,\%$ of the bytes, and is
+near\nobreakdash-constant in the constraint count
+$k$ — confirmed by the bench harness, which reports identical
+proof sizes for AIRs with $k = 1$ (Fibonacci) and $k = 3$
+(HashRollup) at the same $n_\mathrm{trace}$.
 
 \begin{table}[h]
   \centering
   \caption{Per\nobreakdash-user storage cost on a
     \num{10000}\nobreakdash-user UK population with two proven
-    attributes.}
+    attributes, using measured proof bytes from the bench in
+    \S\ref{sec:eval-compute}.}
   \label{tab:storage}
   \begin{tabular}{l r r r}
     \toprule
     \textbf{Scenario} & \textbf{Total bytes} & \textbf{Bytes / user} & \textbf{vs. PII} \\
     \midrule
-    PII   &      \num{595004} &       \num{59.5} & $1.0\times$ \\
-    Proofs & \num{130800000} &   \num{13080.0}  & $\mathbf{220\times}$ \\
+    PII   &      \num{595004}    &       \num{59.5}  & $1.0\times$ \\
+    Proofs & \num{5412320000} & \num{541232}     & $\mathbf{9\,100\times}$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-The $220\!\times$ multiplier is the headline cost.  At commodity
-SSD prices ($\sim\!\pounds 0.05$/GB/month) the absolute cost is
-$\sim\!\pounds 0.008$ per user per year — negligible compared to
-the regulatory cost analysed in \S\ref{sec:eval-regulatory}.  We do
-not yet measure proof generation time empirically; published
-STARK\nobreakdash-STIR figures for similarly\nobreakdash-sized AIRs
-on commodity laptop hardware put the prove\nobreakdash-time at
-$50$\textendash$200$\,ms per attribute and the verify\nobreakdash-time
-at sub\nobreakdash-millisecond~\cite{stark-stir}.
+At commodity cloud SSD prices ($\sim\!\pounds 0.05$/GB/month) the
+absolute cost is
+$5.41 \times 10^{-4}$ GB / user $\times \pounds 0.05$/mo
+$\times 12$ mo $\approx \pounds 3.25$ per $\num{10000}$\nobreakdash-user
+deployment per year — three orders of magnitude below the
+$\pounds\num{19071}$\nobreakdash-per\nobreakdash-year fine
+reduction analysed in \S\ref{sec:eval-regulatory}, and still
+below by an order of magnitude even at premium managed\nobreakdash-DB
+pricing of $\pounds 0.30$/GB/month.
 
 \subsection{Compute cost}
 \label{sec:eval-compute}
 
-\textbf{Provisional figures from upstream STARK\nobreakdash-STIR
-benchmarks.}  Empirical timings against our reference
-implementation are pending the
-\texttt{deep\_ali}\nobreakdash-integration follow\nobreakdash-up and
-will appear in the final paper.  Indicative figures from the
-\cite{stark-stir} prover at comparable
-parameters: $\sim\!100$\,ms prove time per attribute on a
-\texttt{cargo --release} build on Apple\nobreakdash-Silicon laptop
-hardware; verify time below $1$\,ms; end\nobreakdash-to\nobreakdash-end
-registration latency dominated by the proof\nobreakdash-generation
-phase, with the database write (sqlx + sqlite/postgres) under
-$5$\,ms.
+We drive the upstream \texttt{deep\_ali} prover directly from the
+bench harness (\texttt{mmiyc-bench bench}) and report the median
+of $20$ prove + verify cycles per row count.  Because
+\texttt{deep\_ali} dispatches over a closed \texttt{AirType}
+enum and our age / country AIRs do not yet have first\nobreakdash-class
+variants in that enum, we measure two existing AIRs that bracket
+the range\nobreakdash-check / Merkle\nobreakdash-path workloads in
+trace width and constraint count: Fibonacci ($w=2$, $k=1$,
+deg\nobreakdash-2) as a tight lower bound for the age\nobreakdash-range
+AIR ($w=2$ Boolean cols + $k=2$ deg\nobreakdash-2 transitions),
+and HashRollup ($w=4$, $k=3$, deg\nobreakdash-2) as the upper bound
+for the wider Merkle\nobreakdash-path AIRs (country, postcode,
+e\nobreakdash-mail; \S\ref{sec:airs}).  All numbers are from
+a single Apple\nobreakdash-Silicon (M\nobreakdash-series) laptop,
+\texttt{cargo --release}, no rayon
+parallelism — i.e.\ the configuration most representative of a
+WASM browser deployment.
+
+Table~\ref{tab:compute} reports the measurement.  Three findings:
+
+\begin{enumerate}
+  \item \textbf{Prove time scales linearly with $n_\mathrm{trace}$}
+        across the regime we measured ($32 \to 256$ rows;
+        $7 \to 60$\,ms).  Constraint count $k$ contributes
+        sub\nobreakdash-millisecond differences at this scale.
+  \item \textbf{Verify time is essentially constant} at
+        $1.2$\textendash$1.7$\,ms across all configurations,
+        consistent with the FRI verifier's logarithmic dependence
+        on $n_\mathrm{trace}$.
+  \item \textbf{Proof bytes are FRI\nobreakdash-query\nobreakdash-dominated}
+        and \emph{independent of constraint count $k$}: Fibonacci
+        and HashRollup produce identical proof sizes at every
+        $n_\mathrm{trace}$ we measured.
+\end{enumerate}
+
+\begin{table}[h]
+  \centering
+  \caption{Real prove + verify timings against the
+    \texttt{deep\_ali} backend, median of $20$ runs.  Smaller
+    $n_\mathrm{trace}$ rows are the relevant regime for
+    registration AIRs; larger rows are reported to anchor the
+    extrapolation.  All on a single Apple\nobreakdash-Silicon
+    laptop, \texttt{cargo --release}, no parallelism.}
+  \label{tab:compute}
+  \begin{tabular}{l r r r r r r}
+    \toprule
+    \textbf{AIR} & $n_\mathrm{trace}$ & $w$ & $k$ &
+      \textbf{prove (ms)} & \textbf{verify (ms)} & \textbf{proof (KiB)} \\
+    \midrule
+    Fibonacci  &   $32$ & $2$ & $1$ &  $6.95$ & $1.24$ & $264$ \\
+    Fibonacci  &   $64$ & $2$ & $1$ & $14.15$ & $1.34$ & $292$ \\
+    Fibonacci  &  $128$ & $2$ & $1$ & $28.84$ & $1.52$ & $322$ \\
+    Fibonacci  &  $256$ & $2$ & $1$ & $56.40$ & $1.69$ & $378$ \\
+    \midrule
+    HashRollup &   $32$ & $4$ & $3$ &  $7.38$ & $1.20$ & $264$ \\
+    HashRollup &   $64$ & $4$ & $3$ & $14.91$ & $1.37$ & $292$ \\
+    HashRollup &  $128$ & $4$ & $3$ & $30.73$ & $1.52$ & $322$ \\
+    HashRollup &  $256$ & $4$ & $3$ & $61.20$ & $1.75$ & $378$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Implication for the registration AIRs.}  The
+age\nobreakdash-range AIR runs at $n_\mathrm{trace} = 32$ (one
+row per witness bit, two parallel columns) and the country
+Merkle\nobreakdash-path AIR runs at $n_\mathrm{trace} \leq 32$
+for $|S| \leq 256$ permitted countries.  Both sit within the
+$32$\nobreakdash-row regime of Table~\ref{tab:compute}.  Native
+prove\nobreakdash-time per attribute is therefore
+$\approx 7$\,ms; native verify\nobreakdash-time is
+$\approx 1.2$\,ms; per\nobreakdash-attribute proof bytes are
+$\num{270576}$ — already used in
+Table~\ref{tab:storage}.
+
+\paragraph{WASM feasibility.}  WASM\nobreakdash-compiled
+arithmetic runs at $0.4$\textendash$0.6\times$ native speed for
+field\nobreakdash-arithmetic\nobreakdash-heavy workloads on
+Goldilocks\nobreakdash-class fields~\cite{wasm-bench}, so the
+browser\nobreakdash-side projection of Table~\ref{tab:compute} is
+roughly: $15$\textendash$25$\,ms prove for a $32$\nobreakdash-row
+AIR, $30$\textendash$50$\,ms for $64$ rows, etc.  Two attributes
+proven in series at $32$ rows each is $\sim\!30$\textendash$50$\,ms
+of CPU time in the browser; the dominant
+end\nobreakdash-to\nobreakdash-end registration latency is the
+$\sim\!\num{541232}$\nobreakdash-byte (\num{528}\,KiB)
+proof\nobreakdash-bundle upload, which on a $4$G connection
+($\sim\!10$\,Mbps up) takes $\sim\!400$\,ms.  Full
+client\nobreakdash-side registration with two STARK proofs on
+a phone is therefore well under one second
+end\nobreakdash-to\nobreakdash-end — within the perceptual
+threshold for an interactive form submission and competitive
+with current PII\nobreakdash-only registration flows that already
+take $1$\textendash$3$\,seconds for an e\nobreakdash-mail
+verification round\nobreakdash-trip.
 
 \subsection{Breach simulation}
 \label{sec:eval-breach}
@@ -880,7 +975,7 @@ $ cargo run -p mmiyc-bench --release -- \
 
 $ cargo run -p mmiyc-bench --release -- \
     storage --input data/synthetic-users.csv \
-            --proof-bytes 6500 --attributes 2
+            --proof-bytes 270576 --attributes 2
 
 $ cargo run -p mmiyc-bench --release -- \
     breach --input data/synthetic-users.csv \
@@ -894,6 +989,9 @@ $ cargo run -p mmiyc-bench --release -- \
                --breach-prob 0.05 \
                --per-record-cost 130 \
                --unintelligibility-discount 0.01
+
+$ cargo run -p mmiyc-bench --release -- \
+    bench --air all --iters 20
 \end{verbatim}
 
 Table~\ref{tab:repro} maps each table and figure in this
@@ -909,7 +1007,8 @@ section to the command above whose stdout it was extracted from.
     \toprule
     \textbf{Element} & \textbf{Source command}                 & \textbf{Determined by}              \\
     \midrule
-    Table~\ref{tab:storage}     & \texttt{mmiyc-bench storage}    & \texttt{--proof-bytes}, \texttt{--attributes} \\
+    Table~\ref{tab:storage}     & \texttt{mmiyc-bench bench}      & \texttt{deep\_ali} backend, $n=32$  \\
+    Table~\ref{tab:compute}     & \texttt{mmiyc-bench bench}      & \texttt{--iters}, \texttt{--queries} \\
     Table~\ref{tab:breach}      & \texttt{mmiyc-bench breach}     & seed, \texttt{--aux-*}              \\
     Table~\ref{tab:regulatory}  & \texttt{mmiyc-bench regulatory} & all params at default               \\
     Fig.~\ref{fig:sensitivity}  & \texttt{mmiyc-bench regulatory} & sweep printed inline                \\
@@ -961,16 +1060,22 @@ configuration.  The client\nobreakdash-WASM prover removes this
 exposure window entirely, at the cost of higher engineering effort
 on the browser side.
 
-\paragraph{Real STARK\nobreakdash-STIR proof emission.}  The
-evaluation treats the per\nobreakdash-attribute proof byte count as a
-parameter rather than a measurement, using a conservative
-$6{,}500$\nobreakdash-byte estimate at $128$\nobreakdash-bit security.
-The integration with the upstream
-\texttt{deep\_ali}~\cite{stark-stir} prover is a focused
-follow\nobreakdash-up; we expect the empirical proof size to land
-within $\pm\!50\,\%$ of the assumed value, which would not change
-any of the qualitative conclusions but will tighten the
-storage\nobreakdash-cost confidence interval.
+\paragraph{Outstanding work on the AIR set.}  We measure
+prove + verify against the upstream
+\texttt{deep\_ali}~\cite{stark-stir} backend directly via the
+bench harness in \S\ref{sec:eval-compute}.  The prover currently
+dispatches over a closed \texttt{AirType} enum and we benchmark
+the two existing variants that bracket the registration AIRs in
+trace width and constraint count (Fibonacci and HashRollup).
+Adding first\nobreakdash-class \texttt{AgeRange} and
+\texttt{MerklePath} variants to that enum is a focused
+follow\nobreakdash-up: the Boolean and boundary constraints are a
+small fraction of an existing AIR's polynomial machinery, and the
+proof\nobreakdash-byte count is FRI\nobreakdash-query\nobreakdash-dominated
+(\S\ref{sec:eval-compute} confirms identical proof sizes for
+$k = 1$ and $k = 3$ at the same $n_\mathrm{trace}$), so the
+storage and compute numbers will move within the bracket of
+Table~\ref{tab:compute} rather than shift qualitatively.
 
 \paragraph{Real per\nobreakdash-record fine.}  The
 $\pounds 130$\nobreakdash-per\nobreakdash-record default is the global

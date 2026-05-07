@@ -1504,7 +1504,10 @@ name = "mmiyc-bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ark-ff 0.4.2",
+ "ark-goldilocks",
  "clap",
+ "deep_ali",
  "hex",
  "mmiyc-air",
  "mmiyc-population",
