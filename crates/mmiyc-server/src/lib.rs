@@ -7,12 +7,16 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms, missing_docs)]
 
+pub mod db;
 pub mod router;
 
+use sqlx::SqlitePool;
+
 /// Server-wide configuration.
+#[allow(missing_docs)]
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Database URL (PostgreSQL or SQLite).
+    /// SQLite database URL.  e.g. ``sqlite:mmiyc.db?mode=rwc``.
     pub database_url: String,
     /// HTTP listen address.
     pub bind_addr: String,
@@ -27,4 +31,26 @@ pub enum Scenario {
     Pii,
     /// Proposed: store STARK proofs of attribute predicates.
     Proofs,
+}
+
+impl Scenario {
+    /// Parse from a CLI / env-var string.  Accepts ``pii``,
+    /// ``baseline``, ``proofs``, ``privacy`` (case-insensitive).
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "pii" | "baseline"        => Some(Scenario::Pii),
+            "proofs" | "privacy" | "p"=> Some(Scenario::Proofs),
+            _ => None,
+        }
+    }
+}
+
+/// Application state passed to every axum handler.
+#[allow(missing_docs)]
+#[derive(Clone)]
+pub struct AppState {
+    /// Live SQLite pool.
+    pub pool: SqlitePool,
+    /// Active scenario.
+    pub scenario: Scenario,
 }

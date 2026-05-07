@@ -1539,6 +1539,7 @@ dependencies = [
  "mmiyc-verifier",
  "serde",
  "serde_json",
+ "sha3",
  "sqlx",
  "thiserror 1.0.69",
  "tokio",
