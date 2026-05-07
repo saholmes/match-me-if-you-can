@@ -1,7 +1,9 @@
 # Rust build artefacts
 /target/
 **/*.rs.bk
-Cargo.lock      # workspace; lockfile checked in only at the binary level
+# Cargo.lock IS committed for this workspace — it has binaries
+# (mmiyc-server, mmiyc-bench) and reproducible builds win over the
+# merge-pain.  Library-only forks may want to remove the lockfile.
 
 # Editor / IDE
 .idea/
