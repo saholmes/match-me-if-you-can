@@ -1,0 +1,38 @@
+[package]
+name        = "mmiyc-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Browser-side STARK prover bindings for Match-Me-If-You-Can"
+
+# `cdylib` for the wasm32 target (what wasm-bindgen post-processes);
+# `rlib` so cargo test can pick the crate up under native cargo.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mmiyc-air      = { path = "../mmiyc-air" }
+mmiyc-prover   = { path = "../mmiyc-prover" }
+mmiyc-verifier = { path = "../mmiyc-verifier" }
+
+wasm-bindgen           = "=0.2.99"
+serde                  = { workspace = true }
+serde-wasm-bindgen     = "0.6"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# WebCrypto-backed entropy for the transitively pulled `rand` chain
+# (ark-std → rand → rand_core → getrandom).  Same shim as
+# mmiyc-prover, repeated here so cargo's feature-unification picks
+# it up when the cdylib is the build root.
+getrandom = { version = "0.2", features = ["js"] }
+
+# Browser global scope: Date.now() etc. for wall-clock timing.
+# Pinned to a version compatible with wasm-bindgen-cli 0.2.99 on
+# rustc 1.86 (newer js-sys → newer wasm-bindgen → rustc 1.88+).
+js-sys = "=0.3.76"
+
+# Slightly smaller wasm output; matches what we ship to the browser.
+[profile.release]
+opt-level = "z"
+lto       = true

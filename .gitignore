@@ -32,6 +32,8 @@ bench_results/
 # Frontend build output
 frontend/node_modules/
 frontend/dist/
+# Browser STARK prover artefacts (built by scripts/build-wasm.sh)
+frontend/wasm/
 
 # Paper build artefacts
 docs/paper/*.aux

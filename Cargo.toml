@@ -8,6 +8,7 @@ members = [
     "crates/mmiyc-population",  # synthetic users + breach-simulation harness
     "crates/mmiyc-server",      # axum HTTP service: /register, /verify-*
     "crates/mmiyc-bench",       # storage / latency / breach CLI harness
+    "crates/mmiyc-wasm",        # browser-side prover (wasm-bindgen)
 ]
 
 [workspace.package]

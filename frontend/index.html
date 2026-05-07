@@ -102,10 +102,74 @@
     <input type="number" id="income" required min="0" value="45000">
 
     <button type="submit">Register</button>
+    <button type="button" id="browser-prove-btn"
+            style="background:#3a7bd5;margin-left:0.5rem;">
+      Prove age in browser
+    </button>
   </fieldset>
 </form>
 
 <div id="result" class="panel"></div>
+<div id="wasm-result" class="panel"></div>
+
+<script type="module">
+// --- Phase-2 client-side prover (real STARK in WebAssembly).
+//
+// Loads `mmiyc_wasm` (built by wasm-pack-equivalent post-processing
+// of crates/mmiyc-wasm) and exposes a button that runs prove_age in
+// the browser, displays the wall-clock prove + verify time and the
+// first 32 bytes of the resulting proof.
+//
+// This demonstrates the WASM-prover-feasibility claim from §6.2 of
+// the paper end-to-end: same `deep_ali` pipeline that runs server-
+// side, just with the prove() call relocated into the user agent.
+
+import init, { prove_age_in_browser } from './wasm/mmiyc_wasm.js';
+
+let wasmReady = false;
+const wasmInit = init({ module_or_path: './wasm/mmiyc_wasm_bg.wasm' }).then(() => {
+  wasmReady = true;
+  console.log('[mmiyc-wasm] ready');
+});
+
+document.getElementById('browser-prove-btn').addEventListener('click', async () => {
+  const out = document.getElementById('wasm-result');
+  out.innerHTML = '<p class="small">loading WASM …</p>';
+  await wasmInit;
+  const todayDays = Math.floor(Date.now() / 86400000);
+  const dobIso = document.getElementById('dob').value;
+  const [y, m, d] = dobIso.split('-').map(Number);
+  const dobDays = Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+
+  out.innerHTML = '<p class="small">running STARK prover in your browser …</p>';
+  // Yield once so the "running" message paints before the
+  // ~20 ms blocking prove().
+  await new Promise((r) => setTimeout(r, 0));
+
+  const t0 = performance.now();
+  let result;
+  try {
+    result = prove_age_in_browser(todayDays, 18, 120, dobDays);
+  } catch (e) {
+    out.innerHTML = `<pre class="fail">browser prove failed: ${e}</pre>`;
+    return;
+  }
+  const wall = (performance.now() - t0).toFixed(1);
+
+  out.innerHTML = `
+    <p class="ok">
+      Browser prove + local verify: ${wall} ms total
+      (prove ${result.prove_ms.toFixed(1)} ms, verify ${result.verify_ms.toFixed(1)} ms).
+    </p>
+    <p class="small">
+      Real STARK proof, ${result.byte_len} bytes.
+      Bound to policy <code>${result.policy_id_hex.slice(0, 16)}…</code>
+      via deep_ali's <code>public_inputs_hash</code> transcript.
+    </p>
+    <pre>proof_hex (first 64 bytes): ${result.proof_hex.slice(0, 128)}…</pre>
+  `;
+});
+</script>
 
 <script>
 const $ = (id) => document.getElementById(id);
