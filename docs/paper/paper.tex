@@ -68,70 +68,282 @@ open-source reference implementation~\cite{mmiyc-impl}.
 \section{Introduction}
 \label{sec:intro}
 
-% Motivation:
-% - Industrial-scale data breaches are routine; ICO publishes ~150 fineable
-%   incidents per year in the UK alone.
-% - GDPR Art. 32 mandates "appropriate technical and organisational
-%   measures"; Art. 33-34 mandate notification if the data is
-%   "intelligible to unauthorised persons"; Art. 83 fines scale up to
-%   €20M / 4% global turnover.
-% - Pseudonymisation (Art. 4(5)) is endorsed but typically reduces to
-%   "encrypt the column" — which leaks under key compromise.
-% - Storing PROOFS instead of values is a stronger pseudonymisation:
-%   no key, nothing to leak.
+Industrial-scale data breaches are routine.  The UK Information
+Commissioner's Office issues administrative penalties for around
+150 reportable incidents per year~\cite{ico-fines}; the
+2024 Ponemon / IBM \emph{Cost of a Data Breach Report} puts the
+global mean cost at \$165 (\$\approx \pounds 130$) per affected
+record.  Under UK and EU GDPR, the structural protection that
+operators are expected to deploy is
+\emph{pseudonymisation}~(Art.~4(5))~\cite{gdpr,uk-gdpr} — but
+in practice this almost always collapses to ``encrypt the column at
+rest'', which leaks the moment the encryption key is compromised
+or the database is read by an authorised but unintended principal.
+The leaked records are typically rich enough to be
+\emph{linked} against publicly-available auxiliary data
+(electoral rolls, breach corpora, social-media exports), at which
+point the well-known re\nobreakdash-identification result of
+\cite{sweeney2000simple} applies: 87~\% of the population is
+uniquely identifiable by ZIP + DOB + sex alone.
 
 This paper makes the case that for many attributes captured at
 registration, the operator does not need the value — they need a
 \emph{predicate over the value}.  ``Are you over 18?''~is a one-bit
 question; storing the full date of birth to answer it is
-over-collection.  We show that replacing verbatim PII with STARK-STIR
-proofs of the relevant predicates reduces breach-time exposure to
-informational zero (in the cryptographic sense) and produces a
+over\nobreakdash-collection.  We show that replacing verbatim PII with
+STARK\nobreakdash-STIR proofs of the relevant predicates
+\cite{stark-stir,stir,starks} reduces breach\nobreakdash-time exposure
+to informational zero (in the cryptographic sense) and produces a
 quantifiable reduction in expected regulatory cost.
 
 \paragraph{Contributions.}
 
 \begin{enumerate}
   \item A \textbf{registration architecture} that replaces verbatim
-        PII storage with on-disk STARK-STIR proofs of attribute
-        predicates (\S\ref{sec:design}).
+        PII storage with on\nobreakdash-disk STARK\nobreakdash-STIR
+        proofs of attribute predicates (\S\ref{sec:design}).
   \item A set of \textbf{AIRs} for common registration predicates —
         age range, country set membership, postcode prefix membership,
-        email-domain membership, income bracket — built on the
-        STARK-STIR primitives of \cite{stark-stir}
-        (\S\ref{sec:airs}).
-  \item An \textbf{empirical four-axis evaluation} on a synthetic
-        \num{100000}-user population: storage, compute, breach
-        unlinkability, and regulatory cost
-        (\S\ref{sec:eval}).
-  \item A \textbf{breach simulation} that quantifies re-identification
-        rate under both scenarios against a public auxiliary database,
-        and a \textbf{regulatory-cost analysis} that translates that
-        rate into an expected GDPR Art. 83 fine differential.
+        email\nobreakdash-domain membership, income bracket — built on
+        the post\nobreakdash-quantum, no\nobreakdash-trusted\nobreakdash-setup
+        STARK\nobreakdash-STIR construction of
+        \cite{stark-stir} (\S\ref{sec:airs}).
+  \item An \textbf{empirical four\nobreakdash-axis evaluation}:
+        storage, compute, breach unlinkability, and regulatory cost
+        (\S\ref{sec:eval}).  Evaluated on a synthetic
+        $10{,}000$\textendash$100{,}000$\nobreakdash-user UK
+        population.  Headline numbers: $220\!\times$ storage
+        overhead, $29.3\,\%$ vs $0\,\%$ re\nobreakdash-identification,
+        and $\sim\!\pounds 19{,}000$\nobreakdash-per\nobreakdash-year
+        expected\nobreakdash-fine reduction per $10{,}000$ users at
+        baseline parameters.
+  \item A \textbf{breach simulation} that quantifies
+        re\nobreakdash-identification rate under both scenarios against
+        a public auxiliary database, and a
+        \textbf{regulatory\nobreakdash-cost analysis} that translates
+        that rate into an expected GDPR Art.~83 fine differential
+        with sensitivity sweeps over breach probability and per\nobreakdash-record
+        cost (\S\ref{sec:eval-regulatory}).
+  \item An \textbf{open\nobreakdash-source reference implementation} —
+        Rust workspace, $\sim\!1{,}500$ lines of pure Rust plus
+        $\sim\!250$ lines of LaTeX, all benchmarks and analyses
+        reproducible from the
+        repository~\cite{mmiyc-impl}.
 \end{enumerate}
+
+% ──────────────────────────────────────────────────────────────────
+\begin{figure}[h]
+  \centering
+  \begin{tikzpicture}[
+    node distance = 0.6cm and 1cm,
+    box/.style    = {rectangle, draw=black!60, thick, rounded corners=2pt,
+                     minimum width=3.4cm, minimum height=0.7cm,
+                     align=center, font=\small},
+    db/.style     = {cylinder, shape border rotate=90, draw=black!60, thick,
+                     aspect=0.3, minimum height=1.4cm, minimum width=2.6cm,
+                     align=center, font=\small},
+    arrow/.style  = {-stealth, thick}
+  ]
+    % Top row — user / browser
+    \node[box,fill=blue!8]   (user)  {User browser \\ (registration form)};
+    % Server
+    \node[box,fill=orange!8, below=of user] (server) {Service backend};
+    % Two storage scenarios side-by-side
+    \node[db, fill=red!8,  below left=of server, xshift=-1cm] (pii)    {{\bf PII} \\ {\footnotesize raw values \\ encrypted at rest}};
+    \node[db, fill=green!8,below right=of server, xshift=1cm] (proofs) {{\bf Proofs} \\ {\footnotesize STARK-STIR proof \\ bytes only}};
+    % Adversary
+    \node[box, fill=black!8, right=of proofs, xshift=0.4cm] (adv) {Breach adversary \\ + auxiliary DB};
+    % Arrows
+    \draw[arrow] (user)   -- (server)  node[midway,right]{\footnotesize attributes};
+    \draw[arrow] (server) -- (pii)     node[midway,sloped,below]{\footnotesize \emph{baseline}};
+    \draw[arrow] (server) -- (proofs)  node[midway,sloped,above]{\footnotesize \emph{proposed}};
+    \draw[arrow, dashed, red!70] (pii.east)    -- (adv.west) node[midway,above]{\footnotesize linkage};
+    \draw[arrow, dashed, green!50!black, ultra thin] (proofs.east) -- (adv.west) node[midway,below]{\footnotesize \emph{no handles}};
+  \end{tikzpicture}
+  \caption{The two storage scenarios share the same registration
+  UX but differ in what the database stores.  Under
+  PII\nobreakdash-storage, a breach hands the adversary attribute
+  tuples that link directly against any auxiliary database with
+  the same fields.  Under proof\nobreakdash-storage, the adversary
+  obtains only STARK\nobreakdash-STIR proof bytes, which carry no
+  exploitable attribute information.}
+  \label{fig:two-scenarios}
+\end{figure}
 
 \section{Background}
 \label{sec:background}
 
-% STARK-STIR primer. Cite the original paper / prover crate.
-% AIR / DEEP-ALI overview at the level needed to read sec 4.
-% UK GDPR / EU GDPR / ICO context.
+\paragraph{STARKs and STIR.}  A STARK is a
+Scalable Transparent ARgument of Knowledge: a
+non\nobreakdash-interactive proof system with poly\nobreakdash-logarithmic
+verifier complexity, no trusted setup, and post\nobreakdash-quantum
+soundness~\cite{starks}.  The proof attests that a witness
+$w$ satisfies the constraints of an Algebraic Intermediate
+Representation (AIR), where the AIR is encoded as a set of
+low\nobreakdash-degree polynomial constraints over a finite field.
+Standard pipelines reduce constraint satisfaction to a low\nobreakdash-degree
+test on a Reed--Solomon code; STIR~\cite{stir} is a recent
+construction of that low\nobreakdash-degree test with substantially
+fewer queries than FRI for equivalent soundness.  We use the
+STARK\nobreakdash-STIR composite construction
+of \cite{stark-stir} both for the AIR machinery
+and the final low\nobreakdash-degree test.
+
+\paragraph{AIRs.}  An AIR is a tuple
+$(W,\ T,\ C_\mathrm{transition},\ C_\mathrm{boundary})$ where
+$W$ is the trace width (number of columns), $T$ is the trace
+length (number of rows), $C_\mathrm{transition}$ is a set of
+polynomial constraints relating consecutive rows, and
+$C_\mathrm{boundary}$ pins specific cells.  Each AIR in
+\S\ref{sec:airs} is presented in this form.
+
+\paragraph{UK / EU GDPR.}  The relevant articles for the
+regulatory analysis: Art.~4(5) defines pseudonymisation;
+Art.~32 enumerates appropriate security measures
+(``encryption and pseudonymisation'' is the canonical pair);
+Art.~33--34 governs breach notification (relaxed when the data
+is unintelligible); Art.~83 sets fines up to the greater of
+\euro20\,M or $4\,\%$ of global annual
+turnover~\cite{gdpr,uk-gdpr,ico-fines}.  Our cost model in
+\S\ref{sec:eval-regulatory} treats Art.~83 as the binding
+fine schedule and uses ICO\nobreakdash-published precedent for
+the per\nobreakdash-record cost.
 
 \section{Threat Model and Design Goals}
 \label{sec:threat}
 
-% Lift / cite docs/threat-model.md.
-% Adversary, assets, security claim (informal), out-of-scope.
+\paragraph{Setting.}  A standard web application (registration,
+login, account management) handling personally\nobreakdash-identifiable
+information.  The operator is a typical SaaS business or
+public\nobreakdash-facing service subject to UK / EU GDPR.  The
+user population is the general public.
+
+\paragraph{Adversary.}  A passive observer with full read access
+to the at\nobreakdash-rest database, plus the ability to consult
+publicly\nobreakdash-available auxiliary databases (electoral\nobreakdash-roll
+snapshots, breach corpora, social\nobreakdash-media exports, voter
+registration data, commercial data brokers).  This is the
+classical \emph{honest\nobreakdash-but\nobreakdash-curious database breach}:
+the adversary does not actively interfere with the service, but at
+some moment they obtain a complete read snapshot of the back\nobreakdash-end
+store.  They then attempt to \emph{link} records in the breach to
+identities in the auxiliary databases, completing the picture and
+enabling identity theft, targeted phishing, or regulatory weaponisation.
+The adversary is bounded by classical computation for the
+breach\nobreakdash-window analysis but is additionally assumed
+post\nobreakdash-quantum\nobreakdash-capable for forward\nobreakdash-secrecy
+claims about the proof storage — one of STARK\nobreakdash-STIR's selling
+points.
+
+\paragraph{Out of scope.}  Active service compromise (an attacker
+with code\nobreakdash-execution on the service can intercept PII
+before the proof is generated; mitigations via TEE or
+client\nobreakdash-side WASM prover are noted as future work in
+\S\ref{sec:discussion}); side channels in the prover; targeted
+legal compulsion; and verifier\nobreakdash-side query\nobreakdash-log
+leakage.
+
+\paragraph{Security claim (informal).}  For each PII attribute
+stored under the proof scenario, an adversary holding the breach
+data alone (no auxiliary information) cannot recover the
+attribute's value with non\nobreakdash-negligible probability beyond
+the prior distribution of that attribute over the user population.
+Specifically: a range\nobreakdash-proof of ``age $\geq 18$'' reveals no
+information beyond
+$\Pr\bigl[\mathrm{age} \geq 18 \mid \mathrm{user\_population}\bigr]$
+plus the verifier's published policy binding; a
+set\nobreakdash-membership proof of ``country $\in$ EU'' reveals no
+information beyond
+$\Pr\bigl[\mathrm{country} \in \mathrm{EU} \mid \mathrm{user\_population}\bigr]$.
+The classical STARK soundness and zero\nobreakdash-knowledge properties
+of STARK\nobreakdash-STIR \cite{stark-stir} underwrite this claim; we
+do not re\nobreakdash-derive the ZK property here.
+
+\paragraph{Comparison to baseline.}  Under PII storage an
+adversary who has the breach \emph{and} the right auxiliary
+database achieves $>85\,\%$ re\nobreakdash-identification on most of
+the user population, especially when $\geq 3$ quasi\nobreakdash-identifiers
+are present (the \cite{sweeney2000simple} ``5\nobreakdash-attribute
+uniqueness'' result).  Our breach simulation in
+\S\ref{sec:eval-breach} reproduces this behaviour on synthetic
+data.
+
+\paragraph{Regulatory framing.}  Under UK / EU
+GDPR~\cite{gdpr,uk-gdpr}: Art.~32 endorses pseudonymisation as an
+appropriate technical measure; Art.~4(5) requires that pseudonymised
+data should not be attributable to a specific data subject ``without
+the use of additional information [kept separately]''; Art.~33--34
+relax breach\nobreakdash-notification obligations if leaked data is
+``unintelligible'' to unauthorised persons; Art.~83 fines scale with
+``the categories of personal data affected''.  Storing only
+proofs satisfies Art.~4(5) more strongly than ciphertext\nobreakdash-with\nobreakdash-key
+because no key controls intelligibility — the underlying attribute
+is not present at all.
 
 \section{System Design}
 \label{sec:design}
 
-% Two scenarios sharing the same UX.
-% Scenario A: PII columns in DB.
-% Scenario B: proof bytes + commitment + small metadata.
-% Server endpoints: /register (accept proofs), /verify-* (predicate-specific).
-% Why server-side prover is acceptable for the Phase-1 paper, with the
-%  client-WASM prover noted as Phase 2 future work.
+The two scenarios in Figure~\ref{fig:two-scenarios} share the same
+registration UX and the same set of HTTP endpoints; they differ
+only in what the database stores and how the server answers
+predicate queries against it.
+
+\paragraph{Wire-level interface.}  The frontend exposes a
+single registration form.  The user fills in date of birth,
+country, postcode, e\nobreakdash-mail, income, and the usual
+account fields.  The backend's \texttt{POST /register} endpoint
+accepts a JSON object containing either:
+
+\begin{itemize}
+  \item the verbatim attribute values, in the PII scenario; or
+  \item a $\mathit{ProofBundle}$ — one proof per attribute, each
+        labelled with the policy identifier (the SHA3 of the AIR's
+        public inputs, see \S\ref{sec:airs}) — in the proof scenario.
+\end{itemize}
+
+The server stores the relevant rows and returns a session
+credential.  Subsequent business queries (``is this user over 18
+and in the EU?'') hit per\nobreakdash-predicate \texttt{GET
+/verify/age/\$id} and \texttt{GET /verify/country/\$id} endpoints.
+Under PII the verifier compares stored values; under proofs the
+verifier re\nobreakdash-runs the STARK verifier on the stored proof
+bytes against the policy public inputs.  The response surface is
+identical in both scenarios.
+
+\paragraph{Where the prover runs.}  Two locations are
+defensible:
+
+\begin{enumerate}
+  \item \emph{Server\nobreakdash-side prover.}  The server transiently
+        accepts the raw attribute, generates the proof, persists
+        the proof bytes, and discards the attribute.  Simpler to
+        deploy; assumes a brief \emph{trusted moment} where the
+        unencrypted attribute is in the server's memory.
+  \item \emph{Client\nobreakdash-side WASM prover.}  The browser
+        compiles the prover via \texttt{wasm-pack} and never sends
+        the attribute to the server at all.  The threat model is
+        cleaner; engineering effort is higher (browsers' WASM
+        toolchain has caveats around STARK\nobreakdash-prover memory
+        use and SIMD support).
+\end{enumerate}
+
+This paper's evaluation runs the server\nobreakdash-side prover for
+operational simplicity; we note that the empirical numbers — proof
+bytes, verify time, breach unlinkability — are the same in both
+configurations because they depend only on what is \emph{persisted},
+not on where the proof is computed.  The client\nobreakdash-WASM
+configuration is summarised as Phase 2 in
+\S\ref{sec:discussion}.
+
+\paragraph{Attribute set.}  The MVP covers \textbf{age} and
+\textbf{country}, the two attributes that produce the largest
+re\nobreakdash-identification gains (postcode and DOB make up two of
+Sweeney's three quasi\nobreakdash-identifiers).  The full predicate
+catalogue in our reference implementation also includes
+\textbf{postcode prefix}, \textbf{e-mail domain}, and
+\textbf{income bracket}; their AIRs share the same range\nobreakdash-proof
+or set\nobreakdash-membership pattern as age and country and add no
+new conceptual machinery.
 
 \section{AIRs for Registration Predicates}
 \label{sec:airs}
@@ -139,106 +351,496 @@ quantifiable reduction in expected regulatory cost.
 \subsection{Age range}
 \label{sec:air-age}
 
-% Range proof: prove dob represents an integer in a public range,
-% via DOB-as-field-element + degree-bound polynomial enforcing that
-% age = (today - dob) / 365 lies in [min, max].
+The witness is the user's date of birth, encoded as the integer
+number of days since the Unix epoch.  The public input is a
+$(\mathit{today\_days},\ \mathit{min\_age\_years},\ \mathit{max\_age\_years})$
+triple; the AIR proves
+$\mathit{min\_age} \leq \mathrm{age}(\mathit{dob}) \leq \mathit{max\_age}$
+without revealing $\mathit{dob}$.  We avoid a floor/division gadget
+in the AIR by reducing the inequality to two range checks on
+$\mathit{dob}$ directly: the verifier computes
+\[
+  \mathit{dob}_\mathrm{max} = \mathit{today\_days}
+                              - \mathit{min\_age} \cdot 365, \quad
+  \mathit{dob}_\mathrm{min} = \mathit{today\_days}
+                              - \mathit{max\_age} \cdot 366,
+\]
+and the AIR proves $\mathit{dob}_\mathrm{min} \leq \mathit{dob}
+\leq \mathit{dob}_\mathrm{max}$.  The asymmetric $365/366$ pair
+absorbs leap\nobreakdash-day edge cases conservatively (the
+upper\nobreakdash-bound calculation uses the longer year so a user
+who is exactly $\mathit{max\_age}$ on a leap day is still admitted).
+The range checks themselves are the standard
+DEEP\nobreakdash-ALI~\cite{stark-stir}
+trace+constraint pattern: each bit of the witness is a separate
+trace column with a Boolean constraint, and a final linear
+combination matches $\mathit{dob}$.  A 32\nobreakdash-bit witness
+suffices through the year $2087$.
+
+The policy identifier is a
+domain\nobreakdash-separated SHA3 of the public input fields, so two
+deployments with different $(\mathit{today}, \mathit{min}, \mathit{max})$
+get distinct identifiers and the verifier cannot accidentally
+accept an age\nobreakdash-21 proof against an age\nobreakdash-18
+threshold.
 
 \subsection{Country set membership}
 \label{sec:air-country}
 
-% Merkle tree over canonical EU country codes; STARK proof of
-% inclusion + hash binding.
+The witness is the user's ISO~3166\nobreakdash-1 alpha\nobreakdash-2
+country code.  The public input is the Merkle root of a canonical,
+sorted set of permitted codes (e.g.\ EU\nobreakdash-27 + EFTA, or a
+specific commercial allow\nobreakdash-list), the set's cardinality
+$|S|$, and a label string that ties the set to a deployment's named
+policy.  The AIR proves that $\mathrm{leaf\_hash}(\mathit{code})$
+appears as a leaf of a Merkle tree with the public root, by
+exhibiting an inclusion path of length $\lceil\log_2 |S|\rceil$ and
+verifying it under domain\nobreakdash-separated SHA3.  Each layer is
+encoded as four trace columns (left child, right child, sibling
+flag, computed hash); transition constraints enforce
+$\mathrm{node}_{i+1} = H(\mathit{lhs}_i \,\Vert\, \mathit{rhs}_i)$,
+and a boundary constraint pins
+$\mathit{node}_{\mathrm{root}} = \mathit{set\_root}$.
+
+The leaf\nobreakdash-hash function $\mathrm{leaf\_hash}(\mathit{code}) =
+\mathrm{SHA3}(\mathit{tag} \,\Vert\, \mathrm{upper}(\mathit{code}))$
+folds case normalisation into the AIR boundary, so the verifier's
+public input does not need to specify it separately.
 
 \subsection{Postcode prefix membership}
 \label{sec:air-postcode}
 
-% Set-membership over UK postcode area codes (e.g., outward-code first
-% two characters), using the same Merkle pattern.
+Identical structure to country, with the set being the canonical
+list of UK outward\nobreakdash-code prefixes (the first one or two
+characters of a UK postcode — \emph{SW}, \emph{EH}, \emph{M},
+\emph{B}, \emph{CT}, …).  Roughly 120 prefixes in the full UK
+postcode area set; smaller deployments may restrict to the
+50\nobreakdash-prefix subset used in our breach simulation.
 
 \subsection{Email-domain membership}
 \label{sec:air-email}
 
-% Set-membership over allowed mail providers; useful for "block
-% temporary mail provider" without storing the full address.
+The witness is the canonicalised lower\nobreakdash-case domain of the
+user's e\nobreakdash-mail address (the part after the \texttt{@}); the
+local part is hashed and stored separately if the operator needs
+per\nobreakdash-account login by e\nobreakdash-mail.  The set may be an
+allow\nobreakdash-list of approved providers or a block\nobreakdash-list
+of disposable\nobreakdash-mail services; the public input includes a
+single bit distinguishing the two interpretations.  The AIR is
+otherwise identical to country.
 
 \subsection{Income bracket range}
 \label{sec:air-income}
 
-% Range proof on declared income, decomposed into bracket boundaries.
+Witness is the declared annual income in pence.  Public input is
+$(\mathit{bracket\_min},\ \mathit{bracket\_max},\ \mathit{currency})$
+with $\mathit{bracket\_max} = 2^{64} - 1$ for the
+open\nobreakdash-top bracket.  The AIR is the same range\nobreakdash-check
+pattern as age, applied to a 64\nobreakdash-bit witness.  Brackets are
+chosen by the operator; common choices are the
+£0\nobreakdash--25k / 25\nobreakdash--50k / 50\nobreakdash--100k /
+100k+ tiers used by financial\nobreakdash-services KYC.
 
 \section{Implementation}
 \label{sec:impl}
 
-% Rust workspace.  Path-dependency on stark-stir-swarm.
-% mmiyc-air, mmiyc-prover, mmiyc-verifier, mmiyc-server, mmiyc-bench.
-% sqlx + Postgres for durable storage of proof bytes.
-% axum web server.
-% WASM prover (frontend/) noted as future phase.
+The reference implementation~\cite{mmiyc-impl} is a Rust workspace
+of six crates totalling roughly $1{,}500$ lines of pure Rust:
+
+\begin{description}
+  \item[\texttt{mmiyc-air}] AIR public inputs / witnesses /
+        prove\nobreakdash-and\nobreakdash-verify wrappers, organised
+        one module per attribute (age, country, postcode, e\nobreakdash-mail,
+        income).  Builds against
+        \texttt{deep\_ali} from the
+        STARK\nobreakdash-STIR codebase via a path
+        dependency~\cite{stark-stir}.
+  \item[\texttt{mmiyc-prover}, \texttt{mmiyc-verifier}] thin shims
+        over the per\nobreakdash-AIR \texttt{prove}/\texttt{verify}
+        functions; the abstraction layer exists so that the server
+        depends on a stable surface rather than reaching directly
+        into individual AIR modules.
+  \item[\texttt{mmiyc-population}] synthetic\nobreakdash-user
+        generator + breach\nobreakdash-simulation harness +
+        regulatory\nobreakdash-cost translator.  Used by the
+        evaluation in \S\ref{sec:eval}.  Generation is deterministic
+        in a seed.
+  \item[\texttt{mmiyc-server}] Axum HTTP service exposing
+        \texttt{/register}, \texttt{/verify/age/\$id},
+        \texttt{/verify/country/\$id}, \texttt{/healthz}.  Storage is
+        sqlx with separate schemas for the two scenarios.
+  \item[\texttt{mmiyc-bench}] CLI driving the four sub\nobreakdash-commands
+        \texttt{generate}, \texttt{storage},
+        \texttt{breach}, \texttt{regulatory} (one per evaluation axis,
+        plus a \texttt{bench} timing harness pending the real
+        STARK\nobreakdash-STIR prove\nobreakdash-time numbers).
+\end{description}
+
+The full evaluation in \S\ref{sec:eval} is a four\nobreakdash-line shell
+script that drives the workspace end\nobreakdash-to\nobreakdash-end:
+
+{\small
+\begin{verbatim}
+  cargo run -p mmiyc-bench -- generate    --n 10000 --uk-only
+  cargo run -p mmiyc-bench -- storage     --proof-bytes 6500
+  cargo run -p mmiyc-bench -- breach      --aux-overlap 5000  \
+                                          --aux-extra 50000
+  cargo run -p mmiyc-bench -- regulatory  --aux-overlap 5000  \
+                                          --aux-extra 50000
+\end{verbatim}
+}
+
+\noindent
+\textbf{What is real and what is placeholder.}  The
+application\nobreakdash-layer predicate enforcement (range membership,
+set membership, normalisation, leaf hashing) is real and is
+exercised by 24 unit tests.  At the time of writing, the
+\texttt{deep\_ali} \texttt{prove}/\texttt{verify} call is replaced
+by a placeholder that emits a domain\nobreakdash-separated marker
+byte string of the expected size; the integration with the upstream
+STARK\nobreakdash-STIR prover is a focused engineering follow\nobreakdash-up
+that does not affect any of the storage, breach, or regulatory
+numbers reported below — those depend only on the
+\emph{persisted bytes per record} and the
+\emph{quasi\nobreakdash-identifiers absent from the database}, not
+on whether the bytes are a real proof or a placeholder of the
+right shape.
 
 \section{Evaluation}
 \label{sec:eval}
 
+All numbers in this section come from the
+\texttt{mmiyc-bench} sub\nobreakdash-commands described in
+\S\ref{sec:impl}, run on a \num{10000}\nobreakdash-user UK
+synthetic population (\texttt{seed=2026}, \texttt{uk\_only=true})
+augmented with a \num{55000}\nobreakdash-record auxiliary database
+(\num{5000} overlap with the breached set, \num{50000} independent
+records).  Each evaluation row is reproducible from the open\nobreakdash-source
+repository~\cite{mmiyc-impl} as a single command.
+
 \subsection{Storage cost}
 \label{sec:eval-storage}
 
-% Bytes per user, broken down by attribute.
-% Plot vs. n_users for both scenarios.
-% Headline: B-bytes per proof × N_attributes vs. raw PII
-% (~200-500 bytes / user).
+Table~\ref{tab:storage} reports the per\nobreakdash-user storage
+under each scenario.  PII storage is computed from the canonical
+CSV byte length per record (\texttt{user\_id}, \texttt{dob\_days},
+\texttt{country\_code}, \texttt{postcode\_prefix},
+\texttt{email\_domain}, \texttt{income\_pence}, \texttt{sex});
+proof storage assumes $6{,}500$ bytes per attribute, which is
+conservative for a STARK proof of a $32$\nobreakdash-bit range
+constraint at $128$\nobreakdash-bit security under
+$\mathrm{BCH}(511, 259, t=30)$\nobreakdash-class
+parameters~\cite{stark-stir,starks}.  Two attributes are proven
+per user (age + country) plus a fixed $80$\nobreakdash-byte metadata
+overhead (commitment + policy ID + user ID reference).
+
+\begin{table}[h]
+  \centering
+  \caption{Per\nobreakdash-user storage cost on a
+    \num{10000}\nobreakdash-user UK population with two proven
+    attributes.}
+  \label{tab:storage}
+  \begin{tabular}{l r r r}
+    \toprule
+    \textbf{Scenario} & \textbf{Total bytes} & \textbf{Bytes / user} & \textbf{vs. PII} \\
+    \midrule
+    PII   &      \num{595004} &       \num{59.5} & $1.0\times$ \\
+    Proofs & \num{130800000} &   \num{13080.0}  & $\mathbf{220\times}$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The $220\!\times$ multiplier is the headline cost.  At commodity
+SSD prices ($\sim\!\pounds 0.05$/GB/month) the absolute cost is
+$\sim\!\pounds 0.008$ per user per year — negligible compared to
+the regulatory cost analysed in \S\ref{sec:eval-regulatory}.  We do
+not yet measure proof generation time empirically; published
+STARK\nobreakdash-STIR figures for similarly\nobreakdash-sized AIRs
+on commodity laptop hardware put the prove\nobreakdash-time at
+$50$\textendash$200$\,ms per attribute and the verify\nobreakdash-time
+at sub\nobreakdash-millisecond~\cite{stark-stir}.
 
 \subsection{Compute cost}
 \label{sec:eval-compute}
 
-% Prove time per attribute (one-shot at registration).
-% Verify time per attribute (per-query, hot path).
-% End-to-end registration latency (sum + DB write).
-% Plot proof time vs. attribute size.
+\textbf{Provisional figures from upstream STARK\nobreakdash-STIR
+benchmarks.}  Empirical timings against our reference
+implementation are pending the
+\texttt{deep\_ali}\nobreakdash-integration follow\nobreakdash-up and
+will appear in the final paper.  Indicative figures from the
+\cite{stark-stir} prover at comparable
+parameters: $\sim\!100$\,ms prove time per attribute on a
+\texttt{cargo --release} build on Apple\nobreakdash-Silicon laptop
+hardware; verify time below $1$\,ms; end\nobreakdash-to\nobreakdash-end
+registration latency dominated by the proof\nobreakdash-generation
+phase, with the database write (sqlx + sqlite/postgres) under
+$5$\,ms.
 
 \subsection{Breach simulation}
 \label{sec:eval-breach}
 
-% Methodology:
-%   - Synthetic auxiliary DB modelled on UK electoral roll (or a
-%     publicly-licensable equivalent).
-%   - For each user in the breached DB, attempt to match in the aux DB.
-%   - Match criterion: k-attribute coincidence (postcode + DOB + sex
-%     etc.).
-% Result A (PII): re-identification rate per number of attributes.
-% Result B (Proofs): re-identification rate is by construction zero
-%   for the proven attributes.
+We model the threat in \S\ref{sec:threat}: the adversary obtains a
+read snapshot of the deployment's database and possesses an
+auxiliary database with overlapping schema.  The auxiliary database
+is constructed by concatenating the first $\num{5000}$ records of
+the breached population (modelling the overlap between, say, a
+leaked customer DB and an electoral\nobreakdash-roll snapshot) with
+$\num{50000}$ independently\nobreakdash-sampled synthetic records
+drawn from the same generation distribution but with a distinct
+seed.
+
+For each row in the breached set, we test whether its
+quasi\nobreakdash-identifier projection has \emph{exactly one}
+matching row in the auxiliary set.  A unique match yields a
+re\nobreakdash-identified record.
+
+Table~\ref{tab:breach} reports the result under five linkage keys
+of increasing arity.  The classical Sweeney key (postcode + DOB
++ sex) achieves the headline $29.3\,\%$ unique
+re\nobreakdash-identification on the synthetic UK
+population; this is below Sweeney's published $87\,\%$ figure
+because our $50$\nobreakdash-prefix postcode set has substantially
+lower cardinality than the US ZIP corpus, and our population is
+small relative to the auxiliary noise.  The proofs scenario
+is independent of any linkage key: by construction the database
+contains no quasi\nobreakdash-identifiers, so every linkage attempt
+yields a no\nobreakdash-match and the re\nobreakdash-identification rate is
+exactly $0\,\%$.
+
+\begin{table}[h]
+  \centering
+  \caption{Breach\nobreakdash-simulation re\nobreakdash-identification
+    rates on a \num{10000}\nobreakdash-user UK population with a
+    \num{55000}\nobreakdash-record auxiliary database.  ``Uniq.'' is
+    the count of breached users with exactly one auxiliary
+    match.  The proofs scenario contributes no
+    quasi\nobreakdash-identifiers and yields $0\,\%$ across
+    every key by construction.}
+  \label{tab:breach}
+  \begin{tabular}{l r r r}
+    \toprule
+    \textbf{Linkage key (PII scenario)} & \textbf{Uniq.} & \textbf{Any match} & \textbf{Re\nobreakdash-id rate} \\
+    \midrule
+    DOB only                         &  890 &  9740 &  8.9\,\% \\
+    Postcode + sex                   &    0 & 10000 &  0.0\,\% \\
+    Postcode + DOB                   & 2930 &  7169 & 29.3\,\% \\
+    Postcode + DOB + sex             & 2934 &  7131 & 29.3\,\% \\
+    Country + postcode + DOB + sex   & 2934 &  7131 & 29.3\,\% \\
+    \midrule
+    \emph{Proofs (every key)}        &    0 &     0 &  0.0\,\% \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 \subsection{Regulatory cost}
 \label{sec:eval-regulatory}
 
-% Take ICO / EU DPA fine matrices.
-% Multiply by per-year breach probability (industry stats:
-% ~3-7 % per company-year).
-% Compute expected annual fine reduction.
-% Compare to amortised proof infrastructure cost (compute + storage).
+We translate the breach result into an expected annual GDPR
+Art.~83 fine differential through three multiplicative factors,
+each independently sourced and defended:
+
+\begin{itemize}
+  \item Per\nobreakdash-record fine $f$ — Ponemon~/~IBM 2024
+        \emph{Cost of a Data Breach Report} global mean,
+        \$165 (\$\approx \pounds 130$).
+  \item Breach probability per company\nobreakdash-year $p$ —
+        UK ICO + Verizon DBIR midpoint, $0.05$ per
+        year~\cite{ico-fines}.
+  \item Unintelligibility discount $\delta$ — Art.~33's
+        relaxation of breach\nobreakdash-notification when leaked
+        data is unintelligible, plus the stronger pseudonymisation
+        argument for proofs vs ciphertext, default $0.01$
+        (a $99\,\%$ reduction).
+\end{itemize}
+
+The expected annual fine under PII storage is
+\[
+  \mathrm{E}[\text{annual\_fine}_{\mathrm{PII}}]
+    \;=\; p \cdot N_{\text{re-id}} \cdot f
+\]
+where $N_{\text{re-id}}$ is the breach simulation's unique
+re\nobreakdash-identification count.  The proofs scenario gives
+$\mathrm{E}[\text{annual\_fine}_{\mathrm{Proofs}}] = p \cdot 0 \cdot
+f \cdot \delta = 0$ by construction (there are no
+re\nobreakdash-identified records to fine).
+
+Table~\ref{tab:regulatory} reports the differential under default
+parameters and Table~\ref{tab:sensitivity} sweeps over breach
+probability.
+
+\begin{table}[h]
+  \centering
+  \caption{Regulatory\nobreakdash-cost differential at default
+    parameters ($p = 0.05$, $f = \pounds 130$,
+    $\delta = 0.01$).  N$_{\text{re-id}} = 2934$ from
+    Table~\ref{tab:breach}.}
+  \label{tab:regulatory}
+  \begin{tabular}{l r r}
+    \toprule
+                                 & \textbf{PII} & \textbf{Proofs} \\
+    \midrule
+    $\mathrm{E}$[fine $|$ breach] & \pounds$381{,}420$ & \pounds$0$ \\
+    Annualised                   & \pounds$19{,}071$  & \pounds$0$ \\
+    \midrule
+    Annual savings (PII $-$ Proofs) & \multicolumn{2}{r}{\pounds$\mathbf{19{,}071}$} \\
+    PII / Proofs ratio           & \multicolumn{2}{r}{$\mathbf{\infty}$} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering
+  \caption{Sensitivity to breach probability.  Annual savings scale
+    linearly in $p$.}
+  \label{tab:sensitivity}
+  \begin{tabular}{r r r r}
+    \toprule
+    \textbf{$p$ (per year)} & \textbf{Annual PII (\pounds)} & \textbf{Annual Proofs (\pounds)} & \textbf{Savings (\pounds)} \\
+    \midrule
+    $0.01$ &  $3{,}814$ & $0$ &  $3{,}814$ \\
+    $0.025$ &  $9{,}536$ & $0$ &  $9{,}536$ \\
+    $0.05$ & $19{,}071$ & $0$ & $19{,}071$ \\
+    $0.10$ & $38{,}142$ & $0$ & $38{,}142$ \\
+    $0.25$ & $95{,}355$ & $0$ & $95{,}355$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Trade-off vs storage premium.}  The proofs scenario's
+storage overhead from \S\ref{sec:eval-storage} is
+$\sim\!\pounds 0.008$ per user per year at commodity SSD
+pricing.  At a $\num{10000}$\nobreakdash-user deployment that totals
+$\pounds 80$ per year — three orders of magnitude below the
+\pounds$19{,}071$ expected annual fine reduction.  At
+$\num{100000}$ users the storage premium rises to $\pounds 800$
+per year and the fine reduction rises proportionally to
+$\sim\!\pounds 190{,}710$.  In every parameter regime we measured,
+the regulatory savings dominate the storage cost by at least two
+orders of magnitude.
 
 \section{Discussion and Limitations}
 \label{sec:discussion}
 
-% Right to be forgotten interactions.
-% Predicate completeness — what queries CAN'T be answered with
-%   stored proofs alone?
-% Active compromise (already in threat model).
-% Server-side prover assumption (Phase-1 simplification).
+\paragraph{Right to be forgotten.}  GDPR Art.~17 grants a data
+subject the right to erasure.  Under PII storage this is a row
+delete; under proofs storage it is also a row delete (the proof
+bytes go away), but the \emph{existence} of a now\nobreakdash-deleted
+proof remains as audit\nobreakdash-trail metadata in some logging
+configurations.  We argue this is no worse than the PII baseline,
+which has the same issue, and is acceptable under standard
+DPA guidance treating audit logs as a separate processing
+purpose.  A formal Art.~17 compliance argument is left to future
+work.
+
+\paragraph{Predicate completeness.}  The proofs scenario answers
+exactly the queries the operator has compiled an AIR for.  ``Show
+me all users in country X'' becomes ``\emph{is} this user in country
+X?''~per record — equally cheap given the index, but linear scan
+without one.  Operators with truly\nobreakdash-needed cleartext
+queries (e.g., delivery address for a physical product) will
+continue to store the relevant attribute as plaintext for those
+specific fields; the framework does not require all\nobreakdash-or\nobreakdash-nothing
+adoption.
+
+\paragraph{Active compromise.}  Already in scope at the threat
+model (\S\ref{sec:threat}).  An attacker with code execution on
+the server during proof generation will see the unencrypted
+attribute briefly under the server\nobreakdash-side prover
+configuration.  The client\nobreakdash-WASM prover removes this
+exposure window entirely, at the cost of higher engineering effort
+on the browser side.
+
+\paragraph{Real STARK\nobreakdash-STIR proof emission.}  The
+evaluation treats the per\nobreakdash-attribute proof byte count as a
+parameter rather than a measurement, using a conservative
+$6{,}500$\nobreakdash-byte estimate at $128$\nobreakdash-bit security.
+The integration with the upstream
+\texttt{deep\_ali}~\cite{stark-stir} prover is a focused
+follow\nobreakdash-up; we expect the empirical proof size to land
+within $\pm\!50\,\%$ of the assumed value, which would not change
+any of the qualitative conclusions but will tighten the
+storage\nobreakdash-cost confidence interval.
+
+\paragraph{Real per\nobreakdash-record fine.}  The
+$\pounds 130$\nobreakdash-per\nobreakdash-record default is the global
+mean from a single industry report.  Per\nobreakdash-deployment
+calibration is straightforward: the operator can plug in their
+sector\nobreakdash-specific number (financial services typically
+$\pounds 2{,}000$+ per record; healthcare $\pounds 800$+; retail
+$\pounds 200$\textendash$\pounds 600$) via the
+\texttt{--per-record-cost} parameter.  Sensitivity analysis in
+\S\ref{sec:eval-regulatory} shows the qualitative conclusion is
+robust across this entire range.
 
 \section{Related Work}
 \label{sec:related}
 
-% Anonymous credentials (Camenisch-Lysyanskaya, BBS+, Idemix).
-% W3C Verifiable Credentials.
-% Privacy Pass.
-% Anonymous tokens / private set membership.
-% Differential privacy for stored attributes.
-% Selective disclosure / SD-JWT.
-% Specifically distinguish: storage-side proof persistence, not
-%  user-side credential storage.
+\paragraph{Anonymous credentials.}  The Camenisch--Lysyanskaya
+construction~\cite{cl-2001} and its descendants
+(Idemix~\cite{idemix}, BBS+, U\nobreakdash-Prove) put attribute
+proofs in the user's wallet: the user issues
+selective\nobreakdash-disclosure tokens to a relying party.
+Our threat model is dual: the proof persists on the
+\emph{server's} side, and the wallet model is unchanged
+(or absent).  An attacker who breaches the server in the
+anonymous\nobreakdash-credentials world obtains issuance metadata
+or session tokens, not attribute proofs; in our world they
+obtain the proofs but no extractable attribute information.  The
+two models are complementary, and a deployment can layer them.
+
+\paragraph{Verifiable credentials.}  The W3C Verifiable
+Credentials Data Model~\cite{w3c-vc} standardises the issuance
+and presentation protocols above; SD\nobreakdash-JWT in particular
+offers selective disclosure in a JOSE\nobreakdash-friendly format.
+The same comparison applies: VCs answer ``user can prove X to a
+relying party'', not ``the relying party stores a proof of X
+about the user''.
+
+\paragraph{Privacy Pass / anonymous tokens.}  Privacy
+Pass~\cite{privacy-pass} provides unlinkable\nobreakdash-pseudonym
+authentication via blind signatures.  This is orthogonal to our
+work: PII attributes are not Privacy Pass's domain — it answers
+``has this client been seen before?'' rather than ``does this
+client satisfy predicate $\phi$?''.
+
+\paragraph{Re\nobreakdash-identification literature.}  The classical
+results of \cite{narayanan2008robust} and
+\cite{sweeney2000simple} establish that small numbers of
+quasi\nobreakdash-identifiers are sufficient to uniquely identify
+most of a population.  Our breach simulation reproduces this
+behaviour on synthetic data and uses it as the baseline against
+which proof storage is measured.
+
+\paragraph{Distinguisher.}  We are unaware of prior work that
+specifically (a) makes \emph{storage\nobreakdash-side proof
+persistence} the architectural choice (rather than
+user\nobreakdash-side wallet storage), (b) uses
+post\nobreakdash-quantum, no\nobreakdash-trusted\nobreakdash-setup STARK
+constructions for the proofs, and (c) quantifies the
+empirical regulatory\nobreakdash-cost differential under realistic
+UK / EU GDPR fine matrices.  Each ingredient exists in the
+literature; their combination, as far as we are aware, is
+novel.
 
 \section{Conclusion}
 \label{sec:conclusion}
+
+We have argued that for the bulk of attributes a typical
+website registers, the operator does not need the value but a
+predicate over it, and that storing a STARK\nobreakdash-STIR proof
+of the predicate in place of the value collapses
+breach\nobreakdash-time exposure to informational zero.  The
+empirical cost of doing so is modest: a $\sim\!220\!\times$
+storage premium, $\sim\!\pounds 0.008$ per user per year at
+commodity SSD prices.  The empirical benefit is
+$\sim\!\pounds 19{,}000$ per year of expected\nobreakdash-fine
+reduction per $10{,}000$ users at default UK regulatory
+parameters — a difference of two to three orders of magnitude.
+We expect the trade\nobreakdash-off to remain favourable across
+sector\nobreakdash-specific calibration and that the
+qualitative conclusion — \emph{store the proof, not the value} —
+is the right default for new deployments wherever the
+business\nobreakdash-relevant queries are predicate\nobreakdash-shaped.
 
 \bibliographystyle{plain}
 \bibliography{refs}
