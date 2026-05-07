@@ -33,8 +33,14 @@ rand       = { workspace = true }
 # message that binds (nonce ‖ proof ‖ policy).  Without sk_rsa an
 # exfiltrated DB cannot fabricate the PoK, and the FRI low-degree
 # test rejects any forgery attempt.
-rsa  = "0.9"
-sha2 = { version = "0.10", features = ["oid"] }
+rsa     = "0.9"
+sha2    = { version = "0.10", features = ["oid"] }
+# At-rest encryption of the income proof: RSA-OAEP wraps a fresh
+# AES-256-GCM key per row, then AES-GCM encrypts the proof bytes.
+# An attacker holding the DB but not `sk_rsa` cannot recover the
+# proof bytes, so they can't even feed them to a STARK verifier —
+# the strongest form of the designated-verifier claim.
+aes-gcm = "0.10"
 
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }

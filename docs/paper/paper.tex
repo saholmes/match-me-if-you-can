@@ -931,6 +931,200 @@ discussed in \S\ref{sec:threat}; for the
 client\nobreakdash-prover\nobreakdash-only attributes it is
 eliminated entirely.
 
+\paragraph{End\nobreakdash-to\nobreakdash-end browser deployment
+(measured \texttt{wasm-bindgen} path).}  Table~\ref{tab:wasm}
+extrapolates from \texttt{wasm32-wasip1} under \texttt{wasmtime}
+and Node\nobreakdash-WASI to the actual browser deployment
+target.  We close that loop: \texttt{crates/mmiyc-wasm}
+builds the prover for \texttt{wasm32-unknown-unknown} and exports
+\texttt{prove\_age\_in\_browser},
+\texttt{prove\_country\_in\_browser},
+\texttt{prove\_income\_in\_browser} via \texttt{wasm-bindgen}~0.2.99;
+\texttt{frontend/wasm/worker.js} runs them in a module
+\texttt{Worker} so the $\sim\!\num{700}$\,ms country prove does not
+freeze the main thread.  Numbers measured in Safari~17 / Apple
+Silicon, three\nobreakdash-attribute Phase\nobreakdash-2
+registration:
+
+\begin{itemize}
+  \item \textbf{Browser prove} (median of $5$ runs): age
+        $\num{66}$\,ms, country $\num{706}$\,ms, income
+        $\num{40}$\,ms — agreeing with the V8 column of
+        Table~\ref{tab:wasm} to within $\sim\!10\,\%$.
+  \item \textbf{Wire format under Phase~2}: the request body
+        carries only \texttt{age\_proof\_hex},
+        \texttt{country\_proof\_hex}, \texttt{income\_proof\_hex},
+        \texttt{email}, \texttt{postcode}, \texttt{sex},
+        \texttt{income\_pence}-omitted-when-proven.  Cleartext
+        DOB, country code, and income figure are absent from the
+        \texttt{POST /register} payload.
+  \item \textbf{POST /register wall}: $\num{49}$\,ms total once
+        the proofs are produced (server runs \texttt{verify\_*}
+        only and inserts into SQLite; no server\nobreakdash-side
+        \texttt{prove\_*} on the Phase\nobreakdash-2 path).
+\end{itemize}
+
+\paragraph{Designated\nobreakdash-verifier oracle on
+\texttt{/verify/income/:id}.}  The threat that survives Phase~2
+is database exfiltration: an attacker with read access to
+\texttt{users\_proofs} can in principle run
+\texttt{verify\_income} on the stored bytes and learn its truth
+value.  We close this with two layers; the security argument is
+stated precisely below.
+
+\textbf{Layer 1 — at\nobreakdash-rest encryption.}  Each
+stored proof is encrypted under the operator's
+RSA\nobreakdash-2048 public key
+$\mathit{pk} = (n, e {=} 65537)$ via the standard
+RSA\nobreakdash-OAEP / AES\nobreakdash-256\nobreakdash-GCM
+hybrid construction (\textsc{kem}\textendash\textsc{dem}, RFC~8017
+§7.1; NIST SP~800\nobreakdash-38D for GCM).  Wire format:
+$1$\,B version $\Vert$ $256$\,B RSA\nobreakdash-OAEP\nobreakdash-SHA256
+wrapped AES\nobreakdash-256 key $\Vert$ $12$\,B GCM nonce
+$\Vert$ AES\nobreakdash-256\nobreakdash-GCM
+ciphertext\nobreakdash-with\nobreakdash-tag.  Constant
+$\num{285}$\,bytes per\nobreakdash-row overhead.  Confidentiality
+of the stored proof reduces to RSA\nobreakdash-OAEP
+\textsc{ind\nobreakdash-cca} (Bellare\textendash Rogaway,
+ROM) and AES\nobreakdash-GCM \textsc{ind\nobreakdash-cpa}~$+$
+\textsc{int\nobreakdash-ctxt} (NIST SP~800\nobreakdash-38D).
+
+\textbf{Layer 2 — designated\nobreakdash-verifier STARK
+oracle.}  The verify endpoint constructs
+\[
+m \;=\; \mathrm{SHA3\textnormal-256}\bigl(
+    \tau \,\Vert\, \mathit{nonce}
+       \,\Vert\, \pi_{\mathrm{income}}
+       \,\Vert\, \mathit{policy}\bigr),
+\]
+where $\tau$ is a fixed domain\nobreakdash-separation tag and
+$\mathit{nonce}$ is caller\nobreakdash-supplied
+($32$\,B from \texttt{crypto.getRandomValues} on the browser
+side), then signs $m$ under $\mathit{sk}$ via
+RSA\nobreakdash-PKCS\#1\,v$1.5$\nobreakdash-SHA256
+(\textsc{rsassa\nobreakdash-pkcs1\nobreakdash-v1\_5}; RFC~8017
+§8.2) yielding $\sigma$.  The endpoint then emits a STARK proof
+$\pi_{\mathrm{pok}}$ for the relation
+\[
+\mathcal{R}_{\mathrm{rsa}}\bigl((n,\mathrm{EM}_m),\,\sigma\bigr)
+\;\;\equiv\;\;
+\sigma^{65537} \bmod n \;\stackrel{?}{=}\; \mathrm{EM}_m,
+\]
+where $\mathrm{EM}_m =
+\mathsf{EMSA\textnormal-PKCS1\textnormal-v1\_5}\bigl(
+\mathrm{SHA\textnormal-256}(m),\, k {=} 256\bigr)$.  The
+witness slot $\sigma$ is hidden as the secret column of the
+$1$\nobreakdash-record stacked
+\texttt{rsa2048\_stacked\_air} (the same primitive used for
+DNSSEC algorithm~$8$ in the upstream STARK\nobreakdash-DNS
+work, ported into the workspace).  $\pi_{\mathrm{pok}}$ is
+bound to $(n, \mathrm{EM}_m)$ through the standard FRI
+\texttt{public\_inputs\_hash} transcript.
+
+\textbf{Security claim.}  Let $\mathcal{A}$ be a
+PPT adversary that, given only $(n,
+\pi_{\mathrm{income}}, \mathit{policy})$ extracted from the
+encrypted DB and the (legitimately published) public modulus
+$n$, attempts to produce a
+$/\mathrm{verify}/\mathrm{income}/{:}\mathit{id}$ response
+$(m^{\star}, \pi_{\mathrm{pok}}^{\star})$ that the browser
+verifier accepts under a fresh caller\nobreakdash-supplied
+$\mathit{nonce}^{\star}$.  Acceptance requires
+$\mathrm{deep\_fri\_verify}(\pi_{\mathrm{pok}}^{\star};\,
+\mathrm{public\_inputs\_hash}(n, \mathrm{EM}_{m^{\star}}))$,
+which by FRI knowledge\nobreakdash-soundness extracts a
+witness $\sigma^{\star}$ satisfying
+$\mathcal{R}_{\mathrm{rsa}}\bigl((n,
+\mathrm{EM}_{m^{\star}}),\sigma^{\star}\bigr)$ — i.e.\ a
+valid \textsc{rsassa\nobreakdash-pkcs1\nobreakdash-v1\_5}
+signature on $m^{\star}$ under $\mathit{sk}$.  Because
+$\mathit{nonce}^{\star}$ binds into $m^{\star}$ via the
+SHA3\nobreakdash-$256$ transcript, $m^{\star}$ is fresh from
+$\mathcal{A}$'s view and producing such a $\sigma^{\star}$
+implies a successful \textsc{euf\nobreakdash-cma} forgery
+under \textsc{rsassa\nobreakdash-pkcs1\nobreakdash-v1\_5}, which
+is hard under standard RSA assumptions plus
+SHA\nobreakdash-256 collision\nobreakdash-resistance
+(Jonsson, RFC~8017 §13.1.2).  The STARK does \emph{not}
+prove knowledge of the private exponent $d$; it proves
+knowledge of a fresh\nobreakdash-message
+\textsc{rsassa\nobreakdash-pkcs1\nobreakdash-v1\_5} forgery,
+which under \textsc{euf\nobreakdash-cma} is achievable only by
+parties with signing access to $\mathit{sk}$.
+
+\textbf{Honest\nobreakdash-prover privacy of $\sigma$.}  The
+deep\nobreakdash-ALI / FRI construction we use is sound but is
+not formally zero\nobreakdash-knowledge: $\sigma$ is committed
+to in the trace and FRI selectively opens
+$\sim\!\num{54}$ LDE points per query phase.  An adversary
+observing the proof transcript learns $\le \num{54} \cdot
+\log\bigl(n_{\mathrm{trace}} \cdot \rho^{-1}\bigr)$ field
+elements of leaked information about the trace per proof; this
+is a constant fraction of the trace and does not enable
+$\sigma$ recovery in feasible time, but the construction
+should be upgraded to a zero\nobreakdash-knowledge variant
+(zk\nobreakdash-STARK; Ben\nobreakdash-Sasson et al., \textsc{ccs}~2018,
+\S2.5) before deploying against an adaptive adversary that
+collects many transcripts under the same $\mathit{sk}$.  In
+the present design $\sigma$ rotates per\nobreakdash-call (each
+$\mathit{nonce}$ produces a fresh signed message, hence a
+fresh $\sigma$), so transcript\nobreakdash-leak amplification
+is bounded by the number of distinct calls the adversary can
+solicit.
+
+\textbf{Measured costs} (Apple\nobreakdash-Silicon
+laptop, $1$\nobreakdash-record \texttt{rsa2048\_stacked\_air} at
+$n_{\mathrm{trace}} {=} 32$, BLOWUP $32$,
+arity\nobreakdash-$8$ STIR fold,
+$54$ FRI queries):
+server\nobreakdash-side prove $\sim\!\num{150}$\,ms;
+$|\pi_{\mathrm{pok}}| = \num{108\,666}$\,bytes ($\sim\!\num{106}$\,KiB);
+\texttt{wasm-bindgen} verify in the browser
+$\num{6}$--$\num{8}$\,ms on warm caches;
+\texttt{POST /verify/income/:id} round\nobreakdash-trip including
+WASM verify, $\num{13}$--$\num{19}$\,ms.  The at\nobreakdash-rest
+encrypt at registration time costs $\sim\!\num{1}$\,ms, lost in
+noise behind the STARK prove.
+
+\paragraph{Asymmetry under exfiltration (measured).}  The
+security claim has a directly observable consequence: an
+adversary holding the cleartext income proof bytes
+$\pi_{\mathrm{income}}$ but not $\mathit{sk}$ can verify
+$\pi_{\mathrm{income}}$ generically (the STARK soundness still
+binds it to the operator\nobreakdash-pinned policy
+\texttt{public\_inputs\_hash}, which incorporates $n$), but
+cannot fabricate a verifying $\pi_{\mathrm{pok}}^{\star}$ on a
+fresh $m^{\star}$ — the \textsc{euf\nobreakdash-cma}
+reduction above forbids it.  We exercise both paths
+client\nobreakdash-side via the demo's
+\emph{Simulate exfiltration} button:
+
+\begin{enumerate}
+  \item Generic
+        \texttt{verify\_income}$\bigl(\mathit{policy},
+        \pi_{\mathrm{income}}\bigr)$ in WASM:
+        $\num{3}$\,ms, accepts.  The proof IS real —
+        \texttt{public\_inputs\_hash} matches the
+        operator\nobreakdash-bound policy.
+  \item Forged oracle response:
+        $32$\,B random $m^{\star}$ and
+        $\num{108\,666}$\,B random
+        $\pi_{\mathrm{pok}}^{\star}$ supplied to
+        \texttt{verify\_rsa\_pok\_in\_browser}:
+        $\sim\!\num{0}$\,ms, rejects at the
+        \texttt{ark\_serialize} envelope check (random bytes do
+        not parse as a \texttt{DeepFriProof}; the FRI
+        low\nobreakdash-degree test is never reached).
+\end{enumerate}
+
+The measured asymmetry instantiates the claim: leaked
+$\pi_{\mathrm{income}}$ verifies under generic FRI (the proof
+IS valid; the privacy claim of the STARK is intact), but
+producing a fresh \texttt{/verify/income/:id} response that any
+verifier pinning $n$ accepts is hard under
+\textsc{rsassa\nobreakdash-pkcs1\nobreakdash-v1\_5}
+\textsc{euf\nobreakdash-cma}.
+
 \subsection{Breach simulation}
 \label{sec:eval-breach}
 

@@ -171,10 +171,12 @@ window._mmiycProveAge     = (today, lo, hi, dob) =>
   callWorker('age', [today, lo, hi, dob]);
 window._mmiycProveCountry = (countryCode) =>
   callWorker('country', [countryCode]);
-window._mmiycProveIncome  = (incomePence) =>
-  callWorker('income', [incomePence]);
+window._mmiycProveIncome  = (incomePence, serviceNHex) =>
+  callWorker('income', [incomePence, serviceNHex]);
 window._mmiycVerifyRsaPok = (nHex, messageHex, proofHex) =>
   callWorker('verify-rsa-pok', [nHex, messageHex, proofHex]);
+window._mmiycVerifyIncome = (proofHex, nHex) =>
+  callWorker('verify-income', [proofHex, nHex || '']);
 
 document.getElementById('browser-prove-btn').addEventListener('click', async () => {
   const out = document.getElementById('wasm-result');
@@ -307,8 +309,12 @@ $('reg-form').addEventListener('submit', async (ev) => {
   }
   try {
     if (window._mmiycProveIncome) {
+      // Bind the income policy to the operator's RSA-2048 modulus
+      // when we have it cached.  Empty string = no operator-binding,
+      // matching the unbound-policy server fallback.
+      const nHex = window._mmiycServiceRsaNHex || '';
       const t = performance.now();
-      const r = await window._mmiycProveIncome(incomePence);
+      const r = await window._mmiycProveIncome(incomePence, nHex);
       proveIncomeMs = performance.now() - t;
       body.income_proof_hex = r.proof_hex;
     }
@@ -380,16 +386,34 @@ $('reg-form').addEventListener('submit', async (ev) => {
          columns.  A breach hands these to the adversary directly.
        </p>`;
 
+  // Stash the cleartext income proof_hex for the exfiltration demo.
+  // The browser produced this — under the production threat model
+  // this is the moment a debug build, MITM, or compromised client
+  // could capture it.  It NEVER reaches the DB in cleartext (the
+  // server encrypts at rest), so the demo simulates a side-channel
+  // capture rather than a DB exfiltration.
+  if (body.income_proof_hex) {
+    window._mmiycLastIncomeProofHex = body.income_proof_hex;
+  }
+
   // Income-only Phase-2 detail: a service-locked verify path.  The
-  // server signs the verify response with its Ed25519 sk (cached pk
-  // is on window).  An exfiltrated DB without sk can't produce a
-  // valid signature — the gate's "returns nil" mode.
+  // server signs the verify response with its sk (cached pk is on
+  // window).  An exfiltrated DB without sk can't produce a valid
+  // signature — the gate's "returns nil" mode.  The exfiltration
+  // demo button shows the asymmetry: a generic STARK verifier
+  // accepts the leaked proof bytes (the proof IS real), but the
+  // designated-verifier PoK gate rejects forgeries.
   const lockedVerifyPanel = j.income_proof_bytes != null
     ? `<p>
          <button type="button" id="verify-income-btn"
                  data-user-id="${j.user_id}">
            Verify income (service-locked)
          </button>
+         ${window._mmiycLastIncomeProofHex
+           ? `<button type="button" id="simulate-exfil-btn"
+                      style="background:#a8527d;margin-left:0.5rem;">
+                Simulate exfiltration: generic ✓ vs gate ✗
+              </button>` : ''}
        </p>
        <div id="verify-income-result" class="panel small"></div>`
     : '';
@@ -408,7 +432,101 @@ $('reg-form').addEventListener('submit', async (ev) => {
 
   const verifyBtn = $('verify-income-btn');
   if (verifyBtn) verifyBtn.addEventListener('click', verifyIncomeLocked);
+  const exfilBtn = $('simulate-exfil-btn');
+  if (exfilBtn) exfilBtn.addEventListener('click', simulateExfiltration);
 });
+
+// Exfiltration demo: an attacker has somehow obtained the
+// cleartext income STARK proof (e.g., side-channel before encryption,
+// compromised browser, MITM at form submit).  This demonstrates the
+// designated-verifier gate's value: a generic STARK verifier ACCEPTS
+// the leaked bytes (the proof IS real), but the gate REJECTS forged
+// /verify/income responses because the attacker lacks `sk_rsa` to
+// produce a valid RSA-STARK PoK.  The asymmetry is the point.
+async function simulateExfiltration() {
+  const out = $('verify-income-result');
+  const proofHex = window._mmiycLastIncomeProofHex;
+  const nHex = window._mmiycServiceRsaNHex;
+  if (!proofHex || !nHex) {
+    out.innerHTML = `<span class="fail">Need both a captured proof and a cached service pk.  Register first.</span>`;
+    return;
+  }
+
+  out.innerHTML = `<span class="small">running both verifiers in WASM…</span>`;
+
+  // 1. Generic STARK verify — anyone with the bytes can run this.
+  //    Establishes "the proof is real" without any service binding.
+  let generic;
+  try {
+    const t = performance.now();
+    generic = await window._mmiycVerifyIncome(proofHex, nHex);
+    generic.wallMs = (performance.now() - t).toFixed(1);
+  } catch (e) {
+    out.innerHTML = `<span class="fail">generic verify threw: ${e}</span>`;
+    return;
+  }
+
+  // 2. Designated-verifier check, FORGED.  Simulate an attacker
+  //    standing up a fake oracle: they construct a response with a
+  //    plausibly-shaped proof_pok_hex (~106 KiB of garbage) and a
+  //    fresh signed_message_hex (32 B).  Without sk_rsa they cannot
+  //    produce a PoK that satisfies the FRI low-degree test; the
+  //    WASM verifier rejects.
+  const fakeMessage = new Uint8Array(32);
+  crypto.getRandomValues(fakeMessage);
+  const fakePok = new Uint8Array(108_666);  // matches the legit PoK's byte length
+  // crypto.getRandomValues has a 65,536-byte per-call cap; fill in
+  // chunks so a 108 KiB buffer doesn't trip QuotaExceededError.
+  const RNG_CHUNK = 65_536;
+  for (let off = 0; off < fakePok.length; off += RNG_CHUNK) {
+    crypto.getRandomValues(fakePok.subarray(off, Math.min(off + RNG_CHUNK, fakePok.length)));
+  }
+  let designated;
+  try {
+    const t = performance.now();
+    designated = await window._mmiycVerifyRsaPok(
+      nHex, bytesToHex(fakeMessage), bytesToHex(fakePok),
+    );
+    designated.wallMs = (performance.now() - t).toFixed(1);
+  } catch (e) {
+    designated = { verified: false, verify_ms: 0, wallMs: '0.0', threwError: String(e) };
+  }
+
+  out.innerHTML = `
+    <p class="small"><strong>Threat model:</strong> a leaked DB
+    or side-channel handed an adversary the cleartext income STARK
+    proof.  They lack <code>sk_rsa</code>; they want to convince
+    a downstream consumer that the user's income is in-bracket.</p>
+
+    <p class="small">
+      <span class="ok">①  Generic STARK verify on leaked proof: ${generic.verified ? '✓ accepts' : '✗ rejects'}</span>
+      &nbsp;(WASM ${generic.verify_ms.toFixed(1)} ms)
+      <br>The proof IS real — the leaked bytes are a valid
+      <code>deep_ali</code> FRI proof bound to the operator's policy
+      including <code>n = ${nHex.slice(0, 16)}…</code>.
+    </p>
+
+    <p class="small">
+      <span class="${designated.verified ? 'fail' : 'ok'}">
+        ②  Designated-verifier RSA-STARK PoK on a forged response:
+        ${designated.verified ? '✓ accepts (BAD)' : '✗ rejects'}
+      </span>
+      &nbsp;(WASM ${designated.verify_ms.toFixed(1)} ms)
+      <br>The attacker fabricated a 106 KiB <code>proof_pok_hex</code>
+      of random bytes — without <code>sk_rsa</code> they cannot
+      produce one that satisfies the FRI low-degree test.  Any
+      downstream consumer that pins <code>pk_rsa</code> rejects the
+      forgery: the gate returns nil.
+    </p>
+
+    <p class="small ${(generic.verified && !designated.verified) ? 'ok' : 'fail'}">
+      <strong>Result:</strong>
+      ${(generic.verified && !designated.verified)
+        ? 'Asymmetry holds — leaked bytes verify mathematically, but the operator-bound oracle path is unforgeable without <code>sk_rsa</code>.'
+        : 'Unexpected — see the values above.'}
+    </p>
+  `;
+}
 
 // Designated-verifier income check (RSA-STARK PoK).  Server runs
 // the income STARK verify, then produces a STARK proof of knowledge

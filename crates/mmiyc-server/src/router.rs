@@ -30,7 +30,7 @@ use mmiyc_air::{age, country, income};
 use mmiyc_prover::{prove_age, prove_country, prove_income};
 use mmiyc_verifier::{verify_age, verify_country, verify_income};
 
-use crate::{db, AppState, Scenario};
+use crate::{at_rest, db, AppState, Scenario};
 
 /// Build the application router with all registered routes.
 ///
@@ -154,8 +154,29 @@ fn default_eu_country_policy() -> (country::Public, Vec<[u8; 32]>) {
     country::eu_27_policy()
 }
 
-fn default_income_policy() -> income::Public {
-    income::Public::default_demo_bracket()
+/// Build the live income policy.  Includes the operator's RSA-2048
+/// modulus when configured, so a proof issued under one operator's
+/// pk cannot verify under another's.  `None` falls through to the
+/// unbound default — used by integration tests that don't pay the
+/// RSA keygen cost.
+fn default_income_policy(state: &AppState) -> income::Public {
+    use rsa::traits::PublicKeyParts;
+    let n_be = state.rsa_secret_key.as_ref()
+        .map(|sk| sk.to_public_key().n().to_bytes_be());
+    income::Public::default_demo_bracket(n_be)
+}
+
+/// Decrypt an at-rest proof blob if the server has a key; otherwise
+/// pass through (the test-fixture path).  Used by `/verify/age`,
+/// `/verify/country`, and the income gate to recover the original
+/// STARK bytes before running the verifier.
+fn decrypt_at_rest(state: &AppState, stored: Vec<u8>) -> Result<Vec<u8>, AppError> {
+    if let Some(sk) = state.rsa_secret_key.as_ref() {
+        at_rest::decrypt_with(sk, &stored)
+            .map_err(|e| AppError::Internal(anyhow::anyhow!("at-rest decrypt: {e}")))
+    } else {
+        Ok(stored)
+    }
 }
 
 async fn register(
@@ -242,7 +263,7 @@ async fn register(
                 }
             };
 
-            let income_pub = default_income_policy();
+            let income_pub = default_income_policy(&state);
             let income_proof = match req.income_proof_hex.as_deref() {
                 Some(hex) => {
                     let bytes = hex::decode(hex)
@@ -272,13 +293,31 @@ async fn register(
             let country_n = country_proof.len();
             let income_n = income_proof.len();
 
+            // All three proofs are encrypted at rest under the
+            // operator's RSA-2048 public key.  An attacker with the
+            // DB but not `sk_rsa` recovers only ciphertext — they
+            // can't feed any row to a STARK verifier to learn its
+            // truth value.  When no service key is configured (test
+            // fixture), proofs fall through to cleartext storage.
+            let encrypt = |bytes: Vec<u8>| -> Result<Vec<u8>, AppError> {
+                if let Some(sk) = state.rsa_secret_key.as_ref() {
+                    at_rest::encrypt_for(&sk.to_public_key(), &bytes)
+                        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))
+                } else {
+                    Ok(bytes)
+                }
+            };
+            let age_blob     = encrypt(age_proof)?;
+            let country_blob = encrypt(country_proof)?;
+            let income_blob  = encrypt(income_proof)?;
+
             db::insert_proofs(&state.pool, &db::ProofsRow {
                 user_id:             user_id.clone(),
-                age_proof:           Some(age_proof),
+                age_proof:           Some(age_blob),
                 age_policy_json:     Some(serde_json::to_string(&age_pub).unwrap()),
-                country_proof:       Some(country_proof),
+                country_proof:       Some(country_blob),
                 country_policy_json: Some(serde_json::to_string(&country_pub).unwrap()),
-                income_proof:        Some(income_proof),
+                income_proof:        Some(income_blob),
                 income_policy_json:  Some(serde_json::to_string(&income_pub).unwrap()),
                 email_hash:          Some(email_hash),
                 created_at:          now,
@@ -331,7 +370,8 @@ async fn verify_age_h(
             let row = db::fetch_proofs(&state.pool, &user_id).await
                 .map_err(AppError::Internal)?
                 .ok_or(AppError::NotFound)?;
-            let proof = row.age_proof.ok_or_else(|| AppError::BadRequest("no age proof".into()))?;
+            let stored = row.age_proof.ok_or_else(|| AppError::BadRequest("no age proof".into()))?;
+            let proof = decrypt_at_rest(&state, stored)?;
             let policy_json = row.age_policy_json
                 .ok_or_else(|| AppError::BadRequest("no age policy".into()))?;
             let public: age::Public = serde_json::from_str(&policy_json)
@@ -421,12 +461,18 @@ async fn verify_income_locked(
             .await.map_err(AppError::Internal)?
             .ok_or(AppError::NotFound)?,
     };
-    let proof = row.income_proof
+    let stored_blob = row.income_proof
         .ok_or_else(|| AppError::BadRequest("no income proof on record".into()))?;
     let policy_json = row.income_policy_json
         .ok_or_else(|| AppError::BadRequest("no income policy on record".into()))?;
     let public: income::Public = serde_json::from_str(&policy_json)
         .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    // Decrypt the at-rest envelope.  An attacker with the DB but
+    // not `sk_rsa` cannot reach this point — they'd see only the
+    // RSA-OAEP-wrapped AES-256-GCM blob from `at_rest::encrypt_for`.
+    let _ = sk; // sk is used inside decrypt_at_rest via state
+    let proof = decrypt_at_rest(&state, stored_blob)?;
 
     let verified = verify_income(&public, &proof).is_ok();
     let n_hex = hex::encode(sk.to_public_key().n().to_bytes_be());
@@ -495,8 +541,9 @@ async fn verify_country_h(
             let row = db::fetch_proofs(&state.pool, &user_id).await
                 .map_err(AppError::Internal)?
                 .ok_or(AppError::NotFound)?;
-            let proof = row.country_proof
+            let stored = row.country_proof
                 .ok_or_else(|| AppError::BadRequest("no country proof".into()))?;
+            let proof = decrypt_at_rest(&state, stored)?;
             let policy_json = row.country_policy_json
                 .ok_or_else(|| AppError::BadRequest("no country policy".into()))?;
             let public: country::Public = serde_json::from_str(&policy_json)

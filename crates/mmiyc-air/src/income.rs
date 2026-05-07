@@ -23,18 +23,26 @@ pub struct Public {
     pub bracket_max: u64,
     /// 3-letter ISO currency code.
     pub currency: [u8; 3],
+    /// Service-binding: when `Some`, the policy is pinned to a
+    /// specific operator's RSA-2048 modulus `n` (big-endian).  A
+    /// proof issued against one operator's `n` cannot be replayed
+    /// under another's, because `policy_id()` hashes `n` and the
+    /// STARK transcript binds to `policy_id`.  When `None`, no
+    /// operator-binding — useful for tests and the integration
+    /// fixture that doesn't pay the RSA-2048 keygen cost.
+    #[serde(default)]
+    pub service_pk_n: Option<Vec<u8>>,
 }
 
 impl Public {
-    /// Convenience: a default GBP £25k–£1M bracket — wide enough for
-    /// the demo's prefill and "minimum income" gates without being
-    /// trivially open-ended.  Operators would replace this per
-    /// deployment.
-    pub fn default_demo_bracket() -> Self {
+    /// A default GBP £25k–£1M bracket pinned to the supplied
+    /// operator modulus.  Pass `None` to skip operator-binding (tests).
+    pub fn default_demo_bracket(service_pk_n: Option<Vec<u8>>) -> Self {
         Self {
             bracket_min: 2_500_000,    // £25,000.00 in pence
             bracket_max: 100_000_000,  // £1,000,000.00 in pence
             currency:    *b"GBP",
+            service_pk_n,
         }
     }
 }
@@ -46,6 +54,19 @@ impl PolicyId for Public {
         hasher.update(self.bracket_min.to_be_bytes());
         hasher.update(self.bracket_max.to_be_bytes());
         hasher.update(self.currency);
+        match &self.service_pk_n {
+            Some(n) => {
+                // Domain-separation tag distinguishes None from
+                // Some(empty) so an unbound policy can never collide
+                // with a bound one whose modulus happens to be empty.
+                hasher.update([1u8]);
+                hasher.update(&(n.len() as u64).to_be_bytes());
+                hasher.update(n);
+            }
+            None => {
+                hasher.update([0u8]);
+            }
+        }
         hasher.finalize().into()
     }
 }
@@ -87,29 +108,29 @@ mod tests {
 
     #[test]
     fn in_bracket_passes_check() {
-        let p = Public::default_demo_bracket();
+        let p = Public::default_demo_bracket(None);
         let w = Witness { income_pence: 4_500_000 }; // £45k
         w.check(&p).expect("in-bracket witness must pass");
     }
 
     #[test]
     fn below_bracket_fails() {
-        let p = Public::default_demo_bracket();
+        let p = Public::default_demo_bracket(None);
         let w = Witness { income_pence: 1_000_000 }; // £10k
         assert!(w.check(&p).is_err());
     }
 
     #[test]
     fn above_bracket_fails() {
-        let p = Public::default_demo_bracket();
+        let p = Public::default_demo_bracket(None);
         let w = Witness { income_pence: 200_000_000 }; // £2M
         assert!(w.check(&p).is_err());
     }
 
     #[test]
     fn policy_id_is_stable_and_bracket_sensitive() {
-        let p1 = Public::default_demo_bracket();
-        let p2 = Public::default_demo_bracket();
+        let p1 = Public::default_demo_bracket(None);
+        let p2 = Public::default_demo_bracket(None);
         assert_eq!(p1.policy_id(), p2.policy_id());
         let mut p3 = p1.clone();
         p3.bracket_min += 100;

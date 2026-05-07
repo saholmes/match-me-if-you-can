@@ -129,12 +129,27 @@ pub fn prove_country_in_browser(country_code: String) -> Result<JsValue, JsValue
 }
 
 /// Browser-callable wrapper around `mmiyc_prover::prove_income`,
-/// pinned to the deployment's default GBP £25k–£1M bracket policy.
-/// `income_pence` is the user's secret income in pence (or other
-/// minor currency unit).
+/// pinned to the deployment's default GBP £25k–£1M bracket policy
+/// AND to the operator's RSA-2048 modulus (passed in as `service_n_hex`,
+/// fetched from `/service/pubkey` at page load).  Binding the policy
+/// to the modulus means a proof issued under one operator's `pk`
+/// cannot be replayed under another's — `policy_id` differs, so the
+/// STARK transcript binds differently.
+///
+/// Pass `service_n_hex = ""` (empty string) to skip operator-binding;
+/// the tests fixture and unbound flows use that path.
 #[wasm_bindgen]
-pub fn prove_income_in_browser(income_pence: u64) -> Result<JsValue, JsValue> {
-    let public = income::Public::default_demo_bracket();
+pub fn prove_income_in_browser(
+    income_pence: u64,
+    service_n_hex: String,
+) -> Result<JsValue, JsValue> {
+    let n_opt: Option<Vec<u8>> = if service_n_hex.is_empty() {
+        None
+    } else {
+        Some(hex_to_bytes(&service_n_hex)
+            .ok_or_else(|| JsValue::from_str("bad hex: service_n_hex"))?)
+    };
+    let public = income::Public::default_demo_bracket(n_opt);
     let witness = income::Witness { income_pence };
 
     let t0 = web_sys_now();
@@ -159,6 +174,35 @@ pub fn prove_income_in_browser(income_pence: u64) -> Result<JsValue, JsValue> {
         policy_id_hex: pid_hex,
     };
     serde_wasm_bindgen::to_value(&out)
+        .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
+/// Browser-callable wrapper around `mmiyc_verifier::verify_income`.
+/// Takes the cleartext STARK proof bytes (hex-encoded) and the
+/// operator's modulus (hex-encoded; empty string for unbound).
+/// Used by the exfiltration demo to show that a generic verifier
+/// accepts a leaked proof — establishing that the STARK itself is
+/// real — even when the designated-verifier PoK gate fails.
+#[wasm_bindgen]
+pub fn verify_income_in_browser(
+    proof_hex: String,
+    service_n_hex: String,
+) -> Result<JsValue, JsValue> {
+    let proof = hex_to_bytes(&proof_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: proof_hex"))?;
+    let n_opt: Option<Vec<u8>> = if service_n_hex.is_empty() {
+        None
+    } else {
+        Some(hex_to_bytes(&service_n_hex)
+            .ok_or_else(|| JsValue::from_str("bad hex: service_n_hex"))?)
+    };
+    let public = income::Public::default_demo_bracket(n_opt);
+
+    let t0 = web_sys_now();
+    let verified = mmiyc_verifier::verify_income(&public, &proof).is_ok();
+    let verify_ms = web_sys_now() - t0;
+
+    serde_wasm_bindgen::to_value(&VerifyResult { verified, verify_ms })
         .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
 }
 
