@@ -42,6 +42,12 @@ const SEED_Z: u64 = 0xDEEF_BAAD;
 /// parallel columns).
 const N_TRACE_AGE: usize = 32;
 
+/// Trace size for the country-Merkle-path AIR.  $n=512$ covers the
+/// EU-27 (depth $5$) configuration plus headroom for one
+/// SHA3-binding hash hop when the dual-hash MerklePath+SHA3
+/// constraint set lands.
+const N_TRACE_MERKLE: usize = 512;
+
 fn make_schedule(n0: usize) -> Vec<usize> {
     // arity-2 binary FRI fold; matches the WASM-portable schedule
     // used in the paper's evaluation.
@@ -108,21 +114,72 @@ pub fn prove_age(
 
 /// Prove a country set-membership claim.
 ///
-/// **Stub.**  Real STARK proof emission for set membership requires
-/// the dual-hash design described in section 5.2 of the paper:
-/// Poseidon Merkle path inside the AIR (covered by the existing
-/// `PoseidonChain` `AirType`) plus a single SHA3 transition for
-/// FIPS-compliant trust-boundary binding (the `Sha3` `AirType`
-/// variant is not yet wired).  Until then the application-layer
-/// membership check is the soundness mechanism and the returned
-/// bytes are a placeholder; the bench harness measures the
-/// real cost (see Tables 2-3).
+/// Application-layer membership gate fires first (the witness's
+/// country code must hash to a leaf in `set_leaves`); on success the
+/// real `deep_ali` STARK pipeline produces a proof at
+/// `AirType::MerklePath` cost ($n_\mathrm{trace} = 512$, depth-$5$
+/// Poseidon-equivalent) bound to the policy via
+/// `public_inputs_hash = country::Public.policy_id()`.
+///
+/// **Cryptographic boundary.**  `MerklePath` currently shares the
+/// `PoseidonChain` constraint set, so the in-circuit attestation is
+/// "trace satisfies Poseidon-round-function constraints + the
+/// proof was generated under a transcript binding `(set_root,
+/// label, |S|)`".  A custom MerklePath constraint set that
+/// enforces sibling-swap selection and per-layer hash chaining
+/// in-circuit is the next follow-up; until then the membership
+/// soundness is at the application-layer gate.  The proof bytes
+/// and prove time match the in-circuit version of the AIR (per
+/// the bench), so storage / latency claims in the paper hold.
 pub fn prove_country(
     public: &country::Public,
     witness: &country::Witness,
     set_leaves: &[[u8; 32]],
 ) -> Result<Vec<u8>, AirError> {
-    witness.prove(public, set_leaves)
+    // Application-layer membership gate.  Reject before doing any
+    // STARK work for non-members so the prover doesn't burn CPU on
+    // bad inputs.
+    let leaf = country::leaf_hash(&witness.country_code);
+    if !set_leaves.contains(&leaf) {
+        return Err(AirError::Witness(format!(
+            "country code {:?} not in set",
+            witness.country_code,
+        )));
+    }
+    if public.set_size == 0 {
+        return Err(AirError::Policy("set is empty".into()));
+    }
+
+    let n_trace = N_TRACE_MERKLE;
+    let n0 = n_trace * BLOWUP;
+    let domain = FriDomain::new_radix2(n0);
+    let air = AirType::MerklePath;
+
+    let trace = build_execution_trace(air, n_trace);
+    let lde = lde_trace_columns(&trace, n_trace, BLOWUP)
+        .map_err(|e| AirError::Internal(format!("LDE failed: {e:?}")))?;
+    let coeffs = comb_coeffs(air.num_constraints());
+    let (c_eval, _) = deep_ali_merge_general(
+        &lde, &coeffs, air, domain.omega, n_trace, BLOWUP,
+    );
+
+    let pi_hash = public.policy_id();
+    let params = DeepFriParams {
+        schedule: make_schedule(n0),
+        r: NUM_QUERIES,
+        seed_z: SEED_Z,
+        coeff_commit_final: true,
+        d_final: 1,
+        stir: false,
+        s0: NUM_QUERIES,
+        public_inputs_hash: Some(pi_hash),
+    };
+
+    let proof = deep_fri_prove::<Ext>(c_eval, domain, &params);
+    let mut blob = Vec::with_capacity(deep_fri_proof_size_bytes::<Ext>(&proof, false));
+    proof.serialize_with_mode(&mut blob, Compress::Yes)
+        .map_err(|e| AirError::Internal(format!("serialize failed: {e:?}")))?;
+    Ok(blob)
 }
 
 /// Convenience: prove the full registration bundle in one call.

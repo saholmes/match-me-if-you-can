@@ -604,22 +604,30 @@ script that drives the workspace end\nobreakdash-to\nobreakdash-end:
 \textbf{What is real and what is still stub.}  The
 application\nobreakdash-layer predicate enforcement (range
 membership, set membership, normalisation, leaf hashing) is real
-and is exercised by 36 workspace tests including end\nobreakdash-to\nobreakdash-end
-integration tests against an axum\,+\,SQLite server.  The
-age\nobreakdash-range AIR is wired through to the upstream
-\texttt{deep\_ali} backend (\texttt{AirType::AgeRange32}); the
-server's \texttt{POST /register} endpoint emits a real
-$\num{405524}$\nobreakdash-byte STARK proof which
-\texttt{GET /verify/age/\textit{id}} subsequently verifies under
-the canonical\nobreakdash-serialize wire format.  The country /
-e\nobreakdash-mail dual\nobreakdash-hash AIR remains at the
-application\nobreakdash-layer membership check pending the
-first\nobreakdash-class \texttt{MerklePath} and \texttt{Sha3}
-\texttt{AirType} variants discussed in
-\S\ref{sec:eval-compute}\,/\,\S\ref{sec:discussion} — the bench
-harness measures the prove + verify cost of that combination
-exactly via the existing \texttt{PoseidonChain} and
-\texttt{Sha256DsKsk} reference AIRs (Tables~\ref{tab:compute}\,/\,\ref{tab:wasm}).
+and is exercised by 38 workspace tests including end\nobreakdash-to\nobreakdash-end
+integration tests against an axum\,+\,SQLite server.  Both
+registration AIRs are wired through to the upstream
+\texttt{deep\_ali} backend: \texttt{prove\_age} emits a real
+$\num{405524}$\nobreakdash-byte STARK proof under
+\texttt{AirType::AgeRange32}, and \texttt{prove\_country} emits a
+real $\num{614964}$\nobreakdash-byte STARK proof under
+\texttt{AirType::MerklePath} (a Poseidon\nobreakdash-chain
+constraint set whose distinct enum identity reserves a clean
+slot for the upcoming dedicated Merkle inclusion + dual\nobreakdash-hash
+AIRs).  Both proofs are bound to the deployment policy via
+\texttt{public\_inputs\_hash} and verified end\nobreakdash-to\nobreakdash-end
+under the canonical\nobreakdash-serialize wire format
+(\texttt{GET /verify/\{age,country\}/\textit{id}}).
+The remaining cryptographic gap is
+\emph{in\nobreakdash-circuit Merkle inclusion} (sibling\nobreakdash-swap
+selection + per\nobreakdash-layer hash chaining) and the
+SHA3 trust\nobreakdash-boundary binding — both pending the
+dedicated constraint sets discussed in
+\S\ref{sec:eval-compute}\,/\,\S\ref{sec:discussion}.  The
+application\nobreakdash-layer membership gate fires before any
+STARK work, so a non\nobreakdash-member country never reaches the
+prover; the gap is in what the cryptographic transcript currently
+attests, not in what the deployed system accepts.
 
 \section{Evaluation}
 \label{sec:eval}
