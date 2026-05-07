@@ -47,6 +47,8 @@ pub async fn init_schemas(pool: &SqlitePool) -> Result<()> {
             age_policy_json      TEXT,
             country_proof        BLOB,
             country_policy_json  TEXT,
+            income_proof         BLOB,
+            income_policy_json   TEXT,
             email_hash           BLOB,    -- separate hashed email for login if needed
             created_at           INTEGER NOT NULL
         )
@@ -110,6 +112,8 @@ pub struct ProofsRow {
     pub age_policy_json:     Option<String>,
     pub country_proof:       Option<Vec<u8>>,
     pub country_policy_json: Option<String>,
+    pub income_proof:        Option<Vec<u8>>,
+    pub income_policy_json:  Option<String>,
     pub email_hash:          Option<Vec<u8>>,
     pub created_at:          i64,
 }
@@ -118,14 +122,17 @@ pub struct ProofsRow {
 pub async fn insert_proofs(pool: &SqlitePool, row: &ProofsRow) -> Result<()> {
     sqlx::query(
         r"INSERT INTO users_proofs
-            (user_id, age_proof, age_policy_json, country_proof, country_policy_json, email_hash, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, age_proof, age_policy_json, country_proof, country_policy_json,
+             income_proof, income_policy_json, email_hash, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&row.user_id)
     .bind(&row.age_proof)
     .bind(&row.age_policy_json)
     .bind(&row.country_proof)
     .bind(&row.country_policy_json)
+    .bind(&row.income_proof)
+    .bind(&row.income_policy_json)
     .bind(&row.email_hash)
     .bind(row.created_at)
     .execute(pool).await?;

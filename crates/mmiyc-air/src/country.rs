@@ -55,6 +55,20 @@ pub fn leaf_hash(code: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Canonical EU-27 country list (as of 2025-01).  Single source of
+/// truth shared by the server's default policy and the browser-side
+/// prover; in production this would be loaded from
+/// `data/eu-countries.json` per-deployment.
+pub const EU_27: &[&str] = &[
+    "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE",
+    "IT","LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE",
+];
+
+/// Convenience: derive the EU-27 policy + leaves with `build_set`.
+pub fn eu_27_policy() -> (Public, Vec<[u8; 32]>) {
+    build_set(EU_27)
+}
+
 /// Build the Merkle root + leaves of a canonical sorted country set.
 ///
 /// Returns `(set_root, leaves_in_order)` so the prover (or test) can

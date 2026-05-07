@@ -124,13 +124,57 @@
 // the paper end-to-end: same `deep_ali` pipeline that runs server-
 // side, just with the prove() call relocated into the user agent.
 
-import init, { prove_age_in_browser } from './wasm/mmiyc_wasm.js';
+import init, { prove_age_in_browser, prove_country_in_browser,
+                prove_income_in_browser }
+  from './wasm/mmiyc_wasm.js';
 
 let wasmReady = false;
-const wasmInit = init({ module_or_path: './wasm/mmiyc_wasm_bg.wasm' }).then(() => {
+// Cache-buster: WASM binaries cache aggressively (Safari especially);
+// the URL fragment forces a refetch on every page load.  Cheap during
+// dev iteration; remove for production by dropping the `?v=` suffix.
+const wasmUrl = `./wasm/mmiyc_wasm_bg.wasm?v=${Date.now()}`;
+const wasmInit = init({ module_or_path: wasmUrl }).then(() => {
   wasmReady = true;
   console.log('[mmiyc-wasm] ready');
 });
+
+// Spawn a module worker that runs prove() off the main thread so
+// the country-set prove (~650 ms) doesn't freeze the tab.  The
+// smoke-test button above intentionally runs prove on the main
+// thread to demonstrate the in-document path; the form-submit
+// handler below routes through this worker for the responsive UX.
+const proveWorker = new Worker(`./wasm/worker.js?v=${Date.now()}`,
+                               { type: 'module' });
+let nextWorkerJobId = 1;
+const workerPending = new Map();
+proveWorker.addEventListener('message', (ev) => {
+  const { id, ok, result, error } = ev.data;
+  const pend = workerPending.get(id);
+  if (!pend) return;
+  workerPending.delete(id);
+  if (ok) pend.resolve(result);
+  else pend.reject(new Error(error));
+});
+function callWorker(kind, args) {
+  return new Promise((resolve, reject) => {
+    const id = nextWorkerJobId++;
+    workerPending.set(id, { resolve, reject });
+    proveWorker.postMessage({ id, kind, args });
+  });
+}
+
+// Expose to the non-module form-submit handler below.  ES-module
+// imports aren't visible to classic scripts; window is the bridge.
+// Worker-routed (Promise-returning) so callers must `await`.
+window._mmiycWasmInit     = wasmInit;
+window._mmiycProveAge     = (today, lo, hi, dob) =>
+  callWorker('age', [today, lo, hi, dob]);
+window._mmiycProveCountry = (countryCode) =>
+  callWorker('country', [countryCode]);
+window._mmiycProveIncome  = (incomePence) =>
+  callWorker('income', [incomePence]);
+window._mmiycVerifyRsaPok = (nHex, messageHex, proofHex) =>
+  callWorker('verify-rsa-pok', [nHex, messageHex, proofHex]);
 
 document.getElementById('browser-prove-btn').addEventListener('click', async () => {
   const out = document.getElementById('wasm-result');
@@ -193,16 +237,88 @@ async function ping() {
 }
 ping();
 
+// Fetch the service's RSA-2048 public modulus once at page load.
+// Cached on `window` so the income-verify button can hand it to
+// the WASM RSA-PoK verifier without a round-trip per click.  This
+// is the `n` callers pin; the operator publishes it out-of-band.
+async function fetchServicePk() {
+  try {
+    const r = await fetch('/service/pubkey');
+    if (!r.ok) return;
+    const j = await r.json();
+    window._mmiycServiceRsaNHex = j.n_hex;
+  } catch (e) { /* tolerated; the verify button surfaces the error */ }
+}
+fetchServicePk();
+
+// Hex ↔ bytes helpers used by the verify-income button.
+function hexToBytes(hex) {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i*2, i*2+2), 16);
+  return out;
+}
+function bytesToHex(bytes) {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 $('reg-form').addEventListener('submit', async (ev) => {
   ev.preventDefault();
+  const dobDays      = dobToDays($('dob').value);
+  const countryCode  = $('country').value;
+  const incomePence  = Math.round(parseFloat($('income').value || '0') * 100);
   const body = {
-    dob_days:     dobToDays($('dob').value),
-    country_code: $('country').value,
     postcode:     $('postcode').value || null,
     email:        $('email').value,
-    income_pence: Math.round(parseFloat($('income').value || '0') * 100),
     sex:          $('sex').value,
   };
+
+  // Phase-2 path: try the in-browser STARK prover for both the age
+  // proof and the country proof and ship them inside the /register
+  // body.  If a WASM prove fails for either, that one falls back to
+  // Phase-1 (server-side prove from cleartext).  When a Phase-2 path
+  // succeeds, the corresponding cleartext field (`dob_days`,
+  // `country_code`) is omitted from the body — the privacy claim is
+  // that under Phase 2 the server never receives the cleartext
+  // attribute even in transit.
+  let proveAgeMs     = null;
+  let proveCountryMs = null;
+  let proveIncomeMs  = null;
+  await window._mmiycWasmInit?.catch(() => {});
+  try {
+    if (window._mmiycProveAge) {
+      const today = Math.floor(Date.now() / 86400000);
+      const t = performance.now();
+      const r = await window._mmiycProveAge(today, 18, 120, dobDays);
+      proveAgeMs = performance.now() - t;
+      body.age_proof_hex = r.proof_hex;
+    }
+  } catch (e) {
+    console.warn('[mmiyc-wasm] browser age-prove unavailable:', e);
+  }
+  try {
+    if (window._mmiycProveCountry) {
+      const t = performance.now();
+      const r = await window._mmiycProveCountry(countryCode);
+      proveCountryMs = performance.now() - t;
+      body.country_proof_hex = r.proof_hex;
+    }
+  } catch (e) {
+    console.warn('[mmiyc-wasm] browser country-prove unavailable:', e);
+  }
+  try {
+    if (window._mmiycProveIncome) {
+      const t = performance.now();
+      const r = await window._mmiycProveIncome(incomePence);
+      proveIncomeMs = performance.now() - t;
+      body.income_proof_hex = r.proof_hex;
+    }
+  } catch (e) {
+    console.warn('[mmiyc-wasm] browser income-prove unavailable:', e);
+  }
+  if (proveAgeMs     == null) body.dob_days     = dobDays;
+  if (proveCountryMs == null) body.country_code = countryCode;
+  if (proveIncomeMs  == null) body.income_pence = incomePence;
+
   const t0 = performance.now();
   let r, j;
   try {
@@ -226,18 +342,57 @@ $('reg-form').addEventListener('submit', async (ev) => {
 
   const ageBytes     = j.age_proof_bytes;
   const countryBytes = j.country_proof_bytes;
+  const incomeBytes  = j.income_proof_bytes;
+  const phase2Parts = [];
+  if (proveAgeMs     != null) phase2Parts.push(`age in ${proveAgeMs.toFixed(1)} ms`);
+  if (proveCountryMs != null) phase2Parts.push(`country in ${proveCountryMs.toFixed(1)} ms`);
+  if (proveIncomeMs  != null) phase2Parts.push(`income in ${proveIncomeMs.toFixed(1)} ms`);
+  const proofOriginLine = phase2Parts.length === 3
+    ? `<p class="small">
+         All three proofs generated <strong>in the browser</strong>
+         (${phase2Parts.join('; ')}) — Phase 2.  Server verified
+         and persisted without ever seeing the cleartext DOB,
+         country code, or income figure in this request.
+       </p>`
+    : phase2Parts.length > 0
+    ? `<p class="small">
+         Mixed: ${phase2Parts.join('; ')} generated <strong>in the
+         browser</strong>; the remaining proof(s) were generated
+         server-side from cleartext (Phase 1).
+       </p>`
+    : `<p class="small">
+         All proofs generated <strong>server-side</strong>
+         (Phase 1) — WASM prover was unavailable; server received
+         cleartext attributes and proved on the user's behalf.
+       </p>`;
   const proofPanel = ageBytes != null
     ? `<p>Stored under <span class="scenario">${j.scenario}</span> scenario.</p>
        <p class="small">
          Persisted: <code>${ageBytes}</code> bytes age proof,
-         <code>${countryBytes}</code> bytes country proof.
-         No raw DOB / country in the database.
-       </p>`
+         <code>${countryBytes}</code> bytes country proof,
+         <code>${incomeBytes}</code> bytes income proof.
+         No raw DOB / country / income in the database.
+       </p>
+       ${proofOriginLine}`
     : `<p>Stored under <span class="scenario">${j.scenario}</span> scenario.</p>
        <p class="small">
          Persisted: full DOB, country, postcode, email, income, sex
          columns.  A breach hands these to the adversary directly.
        </p>`;
+
+  // Income-only Phase-2 detail: a service-locked verify path.  The
+  // server signs the verify response with its Ed25519 sk (cached pk
+  // is on window).  An exfiltrated DB without sk can't produce a
+  // valid signature — the gate's "returns nil" mode.
+  const lockedVerifyPanel = j.income_proof_bytes != null
+    ? `<p>
+         <button type="button" id="verify-income-btn"
+                 data-user-id="${j.user_id}">
+           Verify income (service-locked)
+         </button>
+       </p>
+       <div id="verify-income-result" class="panel small"></div>`
+    : '';
 
   $('result').innerHTML = `
     <p class="ok">Registered <code>${j.user_id}</code> in ${dt} ms.</p>
@@ -247,9 +402,95 @@ $('reg-form').addEventListener('submit', async (ev) => {
       <code>GET /verify/age/${j.user_id}</code>
       <code>GET /verify/country/${j.user_id}</code>
     </p>
+    ${lockedVerifyPanel}
     <pre>${JSON.stringify(j, null, 2)}</pre>
   `;
+
+  const verifyBtn = $('verify-income-btn');
+  if (verifyBtn) verifyBtn.addEventListener('click', verifyIncomeLocked);
 });
+
+// Designated-verifier income check (RSA-STARK PoK).  Server runs
+// the income STARK verify, then produces a STARK proof of knowledge
+// of `sk_rsa` for `pk_rsa = (n, 65537)` over a message that binds
+// (nonce ‖ income_proof ‖ policy).  Browser verifies the PoK STARK
+// against the cached `n` via the WASM verifier (no WebCrypto
+// dependency).  An exfiltrated DB without `sk_rsa` cannot fabricate
+// the PoK — the FRI low-degree test would reject the forgery.
+async function verifyIncomeLocked(ev) {
+  const userId = ev.currentTarget.getAttribute('data-user-id');
+  const out = $('verify-income-result');
+  out.innerHTML = '<span class="small">requesting service-locked verify (RSA-STARK PoK)…</span>';
+
+  // Fresh nonce per call so a stored response can't be replayed.
+  const nonceBytes = new Uint8Array(32);
+  crypto.getRandomValues(nonceBytes);
+  const nonceHex = bytesToHex(nonceBytes);
+
+  let r, j;
+  try {
+    r = await fetch(`/verify/income/${encodeURIComponent(userId)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nonce_hex: nonceHex }),
+    });
+    j = await r.json();
+  } catch (e) {
+    out.innerHTML = `<span class="fail">network error: ${e}</span>`;
+    return;
+  }
+  if (!r.ok) {
+    out.innerHTML = `<span class="fail">HTTP ${r.status}: ${JSON.stringify(j)}</span>`;
+    return;
+  }
+  if (!j.verified) {
+    out.innerHTML = `<span class="fail">STARK verification failed; gate returns nil (no PoK).</span>`;
+    return;
+  }
+  if (!j.proof_pok_hex || !j.signed_message_hex) {
+    out.innerHTML = `<span class="fail">Missing service PoK — exfiltrated-oracle behaviour.</span>`;
+    return;
+  }
+
+  const cachedN = window._mmiycServiceRsaNHex;
+  if (!cachedN) {
+    out.innerHTML = `<span class="fail">Service RSA modulus not cached; cannot validate.</span>`;
+    return;
+  }
+  if (cachedN !== j.service_n_hex) {
+    out.innerHTML = `<span class="fail">Service modulus mismatch (cached ${cachedN.slice(0,16)}…, response ${j.service_n_hex.slice(0,16)}…).  Possible MITM; rejecting.</span>`;
+    return;
+  }
+
+  // WASM RSA-STARK PoK verification (deep_ali FRI).  Hidden inside
+  // the proof: the RSA signature itself — the witness.
+  out.innerHTML = `<span class="small">verifying RSA-STARK PoK in WASM (~?ms)…</span>`;
+  const tStart = performance.now();
+  let v;
+  try {
+    v = await window._mmiycVerifyRsaPok(
+      cachedN, j.signed_message_hex, j.proof_pok_hex,
+    );
+  } catch (e) {
+    out.innerHTML = `<span class="fail">verify_rsa_pok threw: ${e}</span>`;
+    return;
+  }
+  const tWall = performance.now() - tStart;
+
+  out.innerHTML = v.verified
+    ? `<span class="ok">Service-attested verification ✓</span>
+       <br>Income STARK verifies AND the response carries an
+       RSA-STARK PoK that the operator knows <code>sk_rsa</code>
+       for <code>n = ${cachedN.slice(0, 24)}…</code> (verify
+       wall ${tWall.toFixed(1)} ms; WASM
+       ${v.verify_ms.toFixed(1)} ms; proof
+       ${(j.proof_pok_hex.length / 2 / 1024).toFixed(1)} KiB).
+       <br>An exfiltrated DB without <code>sk_rsa</code> cannot
+       fabricate this PoK — the FRI low-degree test would reject
+       any forgery.  RSA signature itself is the STARK witness,
+       hidden from the wire.`
+    : `<span class="fail">RSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
+}
 </script>
 
 </body>

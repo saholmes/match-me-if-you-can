@@ -81,3 +81,17 @@ opt-level     = 3
 lto           = "thin"
 codegen-units = 1
 debug         = false
+
+# ark-ff 0.4.2 has an off-by-one debug_assert in const_helpers::write_up_to
+# (asserts num_bytes > 8*(N-1), but the function correctly handles equality).
+# Goldilocks uses N=2 limbs for a 64-bit modulus, so num_bytes == 8 == 8*(N-1)
+# trips the assert and panics any debug build that serialises a Goldilocks
+# field element.  Release builds strip debug_asserts, which is why the WASM
+# release artefact prove/verify cycle works while `cargo test` panics.
+# Disabling debug_assertions for ark-ff specifically lets dev builds run
+# without re-enabling the rest of the optimisations a full --release brings.
+[profile.dev.package.ark-ff]
+debug-assertions = false
+
+[profile.test.package.ark-ff]
+debug-assertions = false

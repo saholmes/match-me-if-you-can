@@ -23,12 +23,18 @@ use tower::ServiceExt;
 /// Build a router + a tempfile-backed pool.  The tempfile is leaked
 /// for the lifetime of the test (we keep the handle around) so the
 /// SQLite file isn't deleted out from under the running pool.
+/// `rsa_secret_key` is `None` here — these tests don't exercise the
+/// `/verify/income/:id` gate, so we skip the slow RSA-2048 keygen.
 async fn fixture(scenario: Scenario) -> (Router, SqlitePool, NamedTempFile) {
     let f = NamedTempFile::new().expect("tempfile");
     let url = format!("sqlite:{}?mode=rwc", f.path().display());
     let pool = SqlitePool::connect(&url).await.expect("open sqlite");
     db::init_schemas(&pool).await.expect("init schemas");
-    let state = AppState { pool: pool.clone(), scenario };
+    let state = AppState {
+        pool: pool.clone(),
+        scenario,
+        rsa_secret_key: None,
+    };
     let router = build_router(state, None);
     (router, pool, f)
 }

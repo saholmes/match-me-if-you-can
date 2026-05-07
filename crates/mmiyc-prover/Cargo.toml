@@ -19,6 +19,13 @@ anyhow        = { workspace = true }
 ark-serialize = { workspace = true }
 sha3          = { workspace = true }
 
+# RSA-2048 PoK (designated-verifier gate for the income proof).
+# `prove_rsa_pok` builds a one-record stacked-RSA AIR on top of the
+# rsa2048_* primitives ported into deep_ali — see
+# `project_mmiyc_designated_verifier.md` for the threat model.
+num-bigint = "0.4"
+sha2       = "0.10"
+
 # WASM target: enable the `js` feature on getrandom so the
 # transitively-pulled `rand` works in the browser via WebCrypto.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

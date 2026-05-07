@@ -10,6 +10,8 @@
 pub mod db;
 pub mod router;
 
+use std::sync::Arc;
+
 use sqlx::SqlitePool;
 
 /// Server-wide configuration.
@@ -53,4 +55,14 @@ pub struct AppState {
     pub pool: SqlitePool,
     /// Active scenario.
     pub scenario: Scenario,
+    /// Service signing key for the income-proof designated-verifier
+    /// gate.  Optional so integration tests that don't exercise
+    /// `/verify/income/:id` can construct an `AppState` without
+    /// paying the ~500 ms RSA-2048 keygen cost; the gate handler
+    /// returns 503 when this is `None`.  In production this is
+    /// always `Some(...)` (generated at startup, persisted in HSM/
+    /// KMS in a real deployment).  Public modulus `n` is published
+    /// at `GET /service/pubkey`; the secret never leaves process
+    /// memory.
+    pub rsa_secret_key: Option<Arc<rsa::RsaPrivateKey>>,
 }

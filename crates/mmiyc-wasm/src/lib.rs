@@ -13,7 +13,7 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms, missing_docs)]
 
-use mmiyc_air::age;
+use mmiyc_air::{age, country, income, PolicyId};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -76,7 +76,6 @@ pub fn prove_age_in_browser(
         .map_err(|e| JsValue::from_str(&format!("local verify: {e}")))?;
     let verify_ms = web_sys_now() - t0;
 
-    use mmiyc_air::PolicyId;
     let pid = public.policy_id();
     let pid_hex: String = pid.iter().map(|b| format!("{b:02x}")).collect();
     let proof_hex: String = proof.iter().map(|b| format!("{b:02x}")).collect();
@@ -90,6 +89,130 @@ pub fn prove_age_in_browser(
     };
     serde_wasm_bindgen::to_value(&out)
         .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
+/// Browser-callable wrapper around `mmiyc_prover::prove_country`,
+/// pinned to the deployment's default EU-27 set policy.  The
+/// witness is the user's ISO-3166 alpha-2 country code; on
+/// success returns the same `ProveResult` shape as
+/// [`prove_age_in_browser`].  Application-layer membership gate
+/// fires before any STARK work, so non-EU codes are rejected
+/// without burning prover CPU.
+#[wasm_bindgen]
+pub fn prove_country_in_browser(country_code: String) -> Result<JsValue, JsValue> {
+    let (public, leaves) = country::eu_27_policy();
+    let witness = country::Witness { country_code };
+
+    let t0 = web_sys_now();
+    let proof = mmiyc_prover::prove_country(&public, &witness, &leaves)
+        .map_err(|e| JsValue::from_str(&format!("prove_country: {e}")))?;
+    let prove_ms = web_sys_now() - t0;
+
+    let t0 = web_sys_now();
+    mmiyc_verifier::verify_country(&public, &proof)
+        .map_err(|e| JsValue::from_str(&format!("local verify: {e}")))?;
+    let verify_ms = web_sys_now() - t0;
+
+    let pid = public.policy_id();
+    let pid_hex: String = pid.iter().map(|b| format!("{b:02x}")).collect();
+    let proof_hex: String = proof.iter().map(|b| format!("{b:02x}")).collect();
+
+    let out = ProveResult {
+        prove_ms,
+        verify_ms,
+        byte_len: proof.len(),
+        proof_hex,
+        policy_id_hex: pid_hex,
+    };
+    serde_wasm_bindgen::to_value(&out)
+        .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
+/// Browser-callable wrapper around `mmiyc_prover::prove_income`,
+/// pinned to the deployment's default GBP £25k–£1M bracket policy.
+/// `income_pence` is the user's secret income in pence (or other
+/// minor currency unit).
+#[wasm_bindgen]
+pub fn prove_income_in_browser(income_pence: u64) -> Result<JsValue, JsValue> {
+    let public = income::Public::default_demo_bracket();
+    let witness = income::Witness { income_pence };
+
+    let t0 = web_sys_now();
+    let proof = mmiyc_prover::prove_income(&public, &witness)
+        .map_err(|e| JsValue::from_str(&format!("prove_income: {e}")))?;
+    let prove_ms = web_sys_now() - t0;
+
+    let t0 = web_sys_now();
+    mmiyc_verifier::verify_income(&public, &proof)
+        .map_err(|e| JsValue::from_str(&format!("local verify: {e}")))?;
+    let verify_ms = web_sys_now() - t0;
+
+    let pid = public.policy_id();
+    let pid_hex: String = pid.iter().map(|b| format!("{b:02x}")).collect();
+    let proof_hex: String = proof.iter().map(|b| format!("{b:02x}")).collect();
+
+    let out = ProveResult {
+        prove_ms,
+        verify_ms,
+        byte_len: proof.len(),
+        proof_hex,
+        policy_id_hex: pid_hex,
+    };
+    serde_wasm_bindgen::to_value(&out)
+        .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
+/// Result returned by the RSA-PoK verify wrapper.
+#[derive(Serialize)]
+struct VerifyResult {
+    verified: bool,
+    verify_ms: f64,
+}
+
+/// Browser-callable wrapper around `mmiyc_verifier::verify_rsa_pok`.
+/// Used by the income-verification gate to check the operator's
+/// designated-verifier proof of knowledge of `sk_rsa` for `pk_rsa`
+/// without leaving the browser.
+///
+/// Inputs are hex-encoded so the JS side can stream them straight
+/// from the `/verify/income/...` JSON response.
+#[wasm_bindgen]
+pub fn verify_rsa_pok_in_browser(
+    n_hex: String,
+    message_hex: String,
+    proof_hex: String,
+) -> Result<JsValue, JsValue> {
+    fn decode(label: &str, s: &str) -> Result<Vec<u8>, JsValue> {
+        hex_to_bytes(s).ok_or_else(|| JsValue::from_str(&format!("bad hex: {label}")))
+    }
+    let n_be    = decode("n_hex", &n_hex)?;
+    let message = decode("message_hex", &message_hex)?;
+    let proof   = decode("proof_hex", &proof_hex)?;
+
+    let t0 = web_sys_now();
+    let verified = mmiyc_verifier::verify_rsa_pok(&n_be, &message, &proof).is_ok();
+    let verify_ms = web_sys_now() - t0;
+
+    serde_wasm_bindgen::to_value(&VerifyResult { verified, verify_ms })
+        .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
+fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 { return None; }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    for i in (0..bytes.len()).step_by(2) {
+        let hi = match bytes[i]     { b'0'..=b'9' => bytes[i]     - b'0',
+                                       b'a'..=b'f' => bytes[i]     - b'a' + 10,
+                                       b'A'..=b'F' => bytes[i]     - b'A' + 10,
+                                       _ => return None };
+        let lo = match bytes[i + 1] { b'0'..=b'9' => bytes[i + 1] - b'0',
+                                       b'a'..=b'f' => bytes[i + 1] - b'a' + 10,
+                                       b'A'..=b'F' => bytes[i + 1] - b'A' + 10,
+                                       _ => return None };
+        out.push((hi << 4) | lo);
+    }
+    Some(out)
 }
 
 /// Wall-clock millisecond timer.  Browser-only (uses

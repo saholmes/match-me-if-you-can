@@ -16,7 +16,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -26,9 +26,9 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use tower_http::{cors::CorsLayer, services::ServeDir};
 
-use mmiyc_air::{age, country};
-use mmiyc_prover::{prove_age, prove_country};
-use mmiyc_verifier::{verify_age, verify_country};
+use mmiyc_air::{age, country, income};
+use mmiyc_prover::{prove_age, prove_country, prove_income};
+use mmiyc_verifier::{verify_age, verify_country, verify_income};
 
 use crate::{db, AppState, Scenario};
 
@@ -38,11 +38,22 @@ use crate::{db, AppState, Scenario};
 /// to serve at `/` (typically the demo HTML form).  When `None`, no
 /// static fallback is registered.
 pub fn build_router(state: AppState, static_dir: Option<std::path::PathBuf>) -> Router {
+    // Three Phase-2 proofs hex-encoded run ~2.9 MB; default axum body
+    // limit is 2 MB.  Bump to 8 MB so a future bigger AIR (or extra
+    // proven attribute) doesn't trip 413 silently.  Tighten later by
+    // switching the wire format to base64 or raw bytes.
+    const REGISTER_BODY_LIMIT: usize = 8 * 1024 * 1024;
+
     let mut app = Router::new()
         .route("/healthz", get(health))
-        .route("/register", post(register))
+        .route(
+            "/register",
+            post(register).layer(DefaultBodyLimit::max(REGISTER_BODY_LIMIT)),
+        )
         .route("/verify/age/:user_id", get(verify_age_h))
         .route("/verify/country/:user_id", get(verify_country_h))
+        .route("/verify/income/:user_id", post(verify_income_locked))
+        .route("/service/pubkey", get(service_pubkey))
         .with_state(state);
 
     if let Some(dir) = static_dir {
@@ -72,12 +83,48 @@ async fn health() -> &'static str { "ok" }
 #[allow(missing_docs)]
 #[derive(Debug, Deserialize)]
 pub struct RegisterRequest {
-    pub dob_days:     u32,
-    pub country_code: String,
+    /// Cleartext DOB in days-since-epoch.  Required for the PII
+    /// scenario (server stores it verbatim) and for the Phase-1
+    /// Proofs path (server proves on the user's behalf).  In the
+    /// Phase-2 Proofs path the browser supplies `age_proof_hex`
+    /// and `dob_days` may be omitted — the server then never sees
+    /// the cleartext DOB even in transit.
+    #[serde(default)]
+    pub dob_days:     Option<u32>,
+    /// Cleartext ISO-3166 alpha-2 country.  Required for the PII
+    /// scenario and for the Phase-1 country prove path.  May be
+    /// omitted under Phase-2 when `country_proof_hex` carries a
+    /// browser-issued proof.
+    #[serde(default)]
+    pub country_code: Option<String>,
     pub postcode:     Option<String>,
     pub email:        String,
-    pub income_pence: u64,
+    /// Cleartext income in minor currency units (pence).  Required
+    /// for the PII scenario and for the Phase-1 income-prove path.
+    /// Omitted under Phase-2 when `income_proof_hex` carries a
+    /// browser-issued bracket proof.
+    #[serde(default)]
+    pub income_pence: Option<u64>,
     pub sex:          String,
+    /// Phase-2 (client-side) age proof, hex-encoded.  When present in
+    /// the Proofs scenario, the server skips its own prove() call and
+    /// just verifies the submitted bytes against the deployment's age
+    /// policy.  When absent, the server falls back to Phase-1
+    /// behaviour (prove from cleartext `dob_days`).
+    #[serde(default)]
+    pub age_proof_hex: Option<String>,
+    /// Phase-2 country-set-membership proof, hex-encoded.  When
+    /// present, server verifies against the deployment's EU-27
+    /// policy and skips its own prove().  When absent, the server
+    /// falls back to Phase-1 (prove from cleartext `country_code`).
+    #[serde(default)]
+    pub country_proof_hex: Option<String>,
+    /// Phase-2 income-bracket proof, hex-encoded.  When present,
+    /// server verifies against the deployment's default GBP £25k–£1M
+    /// bracket and skips its own prove().  When absent, the server
+    /// falls back to Phase-1 (prove from cleartext `income_pence`).
+    #[serde(default)]
+    pub income_proof_hex: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -89,6 +136,7 @@ struct RegisterResponse {
     /// useful for the live demo's "look how little is leaked" panel.
     age_proof_bytes:     Option<usize>,
     country_proof_bytes: Option<usize>,
+    income_proof_bytes:  Option<usize>,
 }
 
 /// Default deployment policies.  In a production system these
@@ -103,11 +151,11 @@ fn default_age_policy() -> age::Public {
 }
 
 fn default_eu_country_policy() -> (country::Public, Vec<[u8; 32]>) {
-    const EU_27: &[&str] = &[
-        "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE",
-        "IT","LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE",
-    ];
-    country::build_set(EU_27)
+    country::eu_27_policy()
+}
+
+fn default_income_policy() -> income::Public {
+    income::Public::default_demo_bracket()
 }
 
 async fn register(
@@ -115,42 +163,103 @@ async fn register(
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), AppError> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-    let body_repr = format!("{}-{}-{}-{}", req.dob_days, req.country_code, req.email, now);
+    let body_repr = format!(
+        "{}-{}-{}-{}",
+        req.dob_days.map(|d| d.to_string()).unwrap_or_else(|| "_".into()),
+        req.country_code.as_deref().unwrap_or("_"),
+        req.email, now,
+    );
     let user_id = mint_user_id(&body_repr, now);
 
-    let (age_bytes, country_bytes) = match state.scenario {
+    let (age_bytes, country_bytes, income_bytes) = match state.scenario {
         Scenario::Pii => {
+            let dob_days = req.dob_days.ok_or_else(|| AppError::BadRequest(
+                "dob_days is required under the PII scenario".into(),
+            ))?;
+            let country_code = req.country_code.ok_or_else(|| AppError::BadRequest(
+                "country_code is required under the PII scenario".into(),
+            ))?;
+            let income_pence = req.income_pence.ok_or_else(|| AppError::BadRequest(
+                "income_pence is required under the PII scenario".into(),
+            ))?;
             db::insert_pii(&state.pool, &db::PiiRow {
                 user_id:      user_id.clone(),
-                dob_days:     i64::from(req.dob_days),
-                country_code: req.country_code,
+                dob_days:     i64::from(dob_days),
+                country_code,
                 postcode:     req.postcode,
                 email:        req.email,
-                income_pence: req.income_pence as i64,
+                income_pence: income_pence as i64,
                 sex:          req.sex,
                 created_at:   now,
             }).await.map_err(AppError::Internal)?;
-            (None, None)
+            (None, None, None)
         }
 
         Scenario::Proofs => {
             // ----------------------------------------------------------
-            // Server-side prover (Phase 1 of the paper).  The raw
-            // attributes are present in this function's stack frame
-            // for the duration of the proof generation, then dropped.
-            // The client-side WASM prover variant of Phase 2 moves
-            // this prove() call into the browser; the resulting wire
-            // format would carry proof bytes instead of raw values.
+            // Age proof: Phase 2 (browser-issued) when the request
+            // carries `age_proof_hex`; Phase 1 (server-issued from
+            // cleartext) otherwise.  Both paths persist the same
+            // bytes in the same column — the only difference is who
+            // ran prove().  Verify-on-submit guarantees we never
+            // store a malformed or off-policy proof.
             // ----------------------------------------------------------
             let age_pub = default_age_policy();
-            let age_w = age::Witness { dob_days: req.dob_days };
-            let age_proof = prove_age(&age_pub, &age_w)
-                .map_err(|e| AppError::BadRequest(format!("age proof failed: {}", e)))?;
+            let age_proof = match req.age_proof_hex.as_deref() {
+                Some(hex) => {
+                    let bytes = hex::decode(hex)
+                        .map_err(|e| AppError::BadRequest(format!("age_proof_hex: {}", e)))?;
+                    verify_age(&age_pub, &bytes)
+                        .map_err(|e| AppError::BadRequest(format!("client age proof rejected: {}", e)))?;
+                    bytes
+                }
+                None => {
+                    let dob_days = req.dob_days.ok_or_else(|| AppError::BadRequest(
+                        "Phase-1 register requires either age_proof_hex or cleartext dob_days".into(),
+                    ))?;
+                    let age_w = age::Witness { dob_days };
+                    prove_age(&age_pub, &age_w)
+                        .map_err(|e| AppError::BadRequest(format!("age proof failed: {}", e)))?
+                }
+            };
 
             let (country_pub, country_leaves) = default_eu_country_policy();
-            let country_w = country::Witness { country_code: req.country_code.clone() };
-            let country_proof = prove_country(&country_pub, &country_w, &country_leaves)
-                .map_err(|e| AppError::BadRequest(format!("country proof failed: {}", e)))?;
+            let country_proof = match req.country_proof_hex.as_deref() {
+                Some(hex) => {
+                    let bytes = hex::decode(hex)
+                        .map_err(|e| AppError::BadRequest(format!("country_proof_hex: {}", e)))?;
+                    verify_country(&country_pub, &bytes)
+                        .map_err(|e| AppError::BadRequest(format!("client country proof rejected: {}", e)))?;
+                    bytes
+                }
+                None => {
+                    let country_code = req.country_code.clone().ok_or_else(|| AppError::BadRequest(
+                        "Phase-1 register requires either country_proof_hex or cleartext country_code".into(),
+                    ))?;
+                    let country_w = country::Witness { country_code };
+                    prove_country(&country_pub, &country_w, &country_leaves)
+                        .map_err(|e| AppError::BadRequest(format!("country proof failed: {}", e)))?
+                }
+            };
+
+            let income_pub = default_income_policy();
+            let income_proof = match req.income_proof_hex.as_deref() {
+                Some(hex) => {
+                    let bytes = hex::decode(hex)
+                        .map_err(|e| AppError::BadRequest(format!("income_proof_hex: {}", e)))?;
+                    verify_income(&income_pub, &bytes)
+                        .map_err(|e| AppError::BadRequest(format!("client income proof rejected: {}", e)))?;
+                    bytes
+                }
+                None => {
+                    let income_pence = req.income_pence.ok_or_else(|| AppError::BadRequest(
+                        "Phase-1 register requires either income_proof_hex or cleartext income_pence".into(),
+                    ))?;
+                    let income_w = income::Witness { income_pence };
+                    prove_income(&income_pub, &income_w)
+                        .map_err(|e| AppError::BadRequest(format!("income proof failed: {}", e)))?
+                }
+            };
 
             let email_hash = {
                 let mut h = Sha3_256::new();
@@ -161,6 +270,7 @@ async fn register(
 
             let age_n = age_proof.len();
             let country_n = country_proof.len();
+            let income_n = income_proof.len();
 
             db::insert_proofs(&state.pool, &db::ProofsRow {
                 user_id:             user_id.clone(),
@@ -168,11 +278,13 @@ async fn register(
                 age_policy_json:     Some(serde_json::to_string(&age_pub).unwrap()),
                 country_proof:       Some(country_proof),
                 country_policy_json: Some(serde_json::to_string(&country_pub).unwrap()),
+                income_proof:        Some(income_proof),
+                income_policy_json:  Some(serde_json::to_string(&income_pub).unwrap()),
                 email_hash:          Some(email_hash),
                 created_at:          now,
             }).await.map_err(AppError::Internal)?;
 
-            (Some(age_n), Some(country_n))
+            (Some(age_n), Some(country_n), Some(income_n))
         }
     };
 
@@ -181,6 +293,7 @@ async fn register(
         scenario: match state.scenario { Scenario::Pii => "pii", Scenario::Proofs => "proofs" },
         age_proof_bytes:     age_bytes,
         country_proof_bytes: country_bytes,
+        income_proof_bytes:  income_bytes,
     })))
 }
 
@@ -228,6 +341,135 @@ async fn verify_age_h(
             Ok(StatusCode::NO_CONTENT)
         }
     }
+}
+
+// ─── /service/pubkey ──────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct ServicePubkey {
+    /// Hex-encoded RSA-2048 modulus `n` (big-endian).  Together
+    /// with the implicit exponent `e = 65537` this is the operator's
+    /// public key.  Callers pin this and pass it to
+    /// `verify_rsa_pok_in_browser` along with the message to gate
+    /// trust on a `/verify/income/:user_id` response.
+    n_hex: String,
+}
+
+async fn service_pubkey(State(state): State<AppState>)
+    -> Result<Json<ServicePubkey>, AppError>
+{
+    use rsa::traits::PublicKeyParts;
+    let sk = state.rsa_secret_key.as_ref().ok_or_else(|| AppError::Internal(
+        anyhow::anyhow!("server has no rsa secret key configured")
+    ))?;
+    let n_hex = hex::encode(sk.to_public_key().n().to_bytes_be());
+    Ok(Json(ServicePubkey { n_hex }))
+}
+
+// ─── /verify/income/:user_id (RSA-STARK designated-verifier gate) ──
+
+/// Caller-chosen random nonce binds each call so a stored response
+/// can't be replayed against a different request.
+#[derive(Debug, Deserialize)]
+struct VerifyIncomeRequest {
+    nonce_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyIncomeResponse {
+    /// True iff the stored STARK income proof verified.
+    verified: bool,
+    /// Hex-encoded RSA-2048 modulus (echoed for caller convenience).
+    service_n_hex: String,
+    /// `SHA3-256(b"mmiyc/v1/verify-income-rsa-binding" ‖ nonce ‖
+    ///           proof_bytes ‖ policy_json)` — the message the
+    /// server signs.  Caller reconstructs this independently and
+    /// passes it to `verify_rsa_pok` along with `proof_pok_hex`.
+    signed_message_hex: Option<String>,
+    /// RSA-2048 STARK PoK proof: a Fiat-Shamir NIZK that the
+    /// server holds `sk_rsa` for `pk_rsa = (n, 65537)` AND signed
+    /// `signed_message`.  The signature itself is the *witness*
+    /// inside the STARK — never appears on the wire.  Returned
+    /// **only** when `verified` is true; otherwise `null` — the
+    /// gate's "returns nil" mode.
+    proof_pok_hex: Option<String>,
+}
+
+async fn verify_income_locked(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    Json(req): Json<VerifyIncomeRequest>,
+) -> Result<Json<VerifyIncomeResponse>, AppError> {
+    use rsa::{
+        pkcs1v15::SigningKey, signature::{Signer, SignatureEncoding},
+        traits::PublicKeyParts,
+    };
+    use sha2::Sha256;
+
+    let sk = state.rsa_secret_key.as_ref().ok_or_else(|| AppError::Internal(
+        anyhow::anyhow!("server has no rsa secret key configured")
+    ))?;
+
+    let nonce = hex::decode(&req.nonce_hex)
+        .map_err(|e| AppError::BadRequest(format!("nonce_hex: {}", e)))?;
+
+    let row = match state.scenario {
+        Scenario::Pii => return Err(AppError::BadRequest(
+            "/verify/income/:id is only meaningful under the Proofs scenario".into(),
+        )),
+        Scenario::Proofs => db::fetch_proofs(&state.pool, &user_id)
+            .await.map_err(AppError::Internal)?
+            .ok_or(AppError::NotFound)?,
+    };
+    let proof = row.income_proof
+        .ok_or_else(|| AppError::BadRequest("no income proof on record".into()))?;
+    let policy_json = row.income_policy_json
+        .ok_or_else(|| AppError::BadRequest("no income policy on record".into()))?;
+    let public: income::Public = serde_json::from_str(&policy_json)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    let verified = verify_income(&public, &proof).is_ok();
+    let n_hex = hex::encode(sk.to_public_key().n().to_bytes_be());
+
+    if !verified {
+        return Ok(Json(VerifyIncomeResponse {
+            verified: false,
+            service_n_hex: n_hex,
+            signed_message_hex: None,
+            proof_pok_hex: None,
+        }));
+    }
+
+    // Bind to (nonce, stark_proof, policy_json) so a replay
+    // attempt can't reuse a stored response across requests.
+    let signed_message = {
+        let mut h = Sha3_256::new();
+        h.update(b"mmiyc/v1/verify-income-rsa-binding");
+        h.update(&nonce);
+        h.update(b"|proof|");
+        h.update(&proof);
+        h.update(b"|policy|");
+        h.update(policy_json.as_bytes());
+        h.finalize().to_vec()
+    };
+
+    // Sign the message under the operator's RSA-2048 key, then
+    // produce a STARK PoK that the signature verifies — the
+    // signature itself stays inside the STARK as the witness.
+    let signing_key = SigningKey::<Sha256>::new((**sk).clone());
+    let sig = signing_key.sign(&signed_message);
+    let sig_be = sig.to_bytes().to_vec();
+    let n_be = sk.to_public_key().n().to_bytes_be();
+
+    let pok = mmiyc_prover::prove_rsa_pok(&n_be, &signed_message, &sig_be)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("prove_rsa_pok: {e}")))?;
+
+    Ok(Json(VerifyIncomeResponse {
+        verified: true,
+        service_n_hex: n_hex,
+        signed_message_hex: Some(hex::encode(&signed_message)),
+        proof_pok_hex: Some(hex::encode(&pok)),
+    }))
 }
 
 async fn verify_country_h(
