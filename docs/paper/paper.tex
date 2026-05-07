@@ -470,15 +470,47 @@ country code.  The public input is the Merkle root of a canonical,
 sorted set of permitted codes (e.g.\ EU\nobreakdash-27 + EFTA, or a
 specific commercial allow\nobreakdash-list), the set's cardinality
 $|S|$, and a label string that ties the set to a deployment's named
-policy.  The AIR proves that $\mathrm{leaf\_hash}(\mathit{code})$
-appears as a leaf of a Merkle tree with the public root, by
-exhibiting an inclusion path of length $\lceil\log_2 |S|\rceil$ and
-verifying it under domain\nobreakdash-separated SHA3.  Each layer is
-encoded as four trace columns (left child, right child, sibling
-flag, computed hash); transition constraints enforce
-$\mathrm{node}_{i+1} = H(\mathit{lhs}_i \,\Vert\, \mathit{rhs}_i)$,
-and a boundary constraint pins
-$\mathit{node}_{\mathrm{root}} = \mathit{set\_root}$.
+policy.
+
+\paragraph{Dual\nobreakdash-hash design (FIPS\nobreakdash-compliant
+trust boundary).}  We follow the dual\nobreakdash-hash pattern from
+STARK\nobreakdash-DNS~\cite{stark-dns}~\S{}III: a
+STARK\nobreakdash-friendly algebraic hash (Poseidon over Goldilocks)
+runs inside the AIR for prover\nobreakdash-time efficiency, and a
+single FIPS\nobreakdash-approved hash (SHA3\nobreakdash-256)
+binds the in\nobreakdash-circuit Poseidon root to the publicly
+committed root at the trust boundary.  Specifically:
+
+\begin{enumerate}
+  \item The deployment publishes
+        $\mathit{set\_root}_{\mathrm{SHA3}} =
+         \mathrm{SHA3}(\mathit{set\_root}_{\mathrm{Pos}}
+         \,\Vert\, \mathit{label} \,\Vert\, |S|)$,
+        a one\nobreakdash-shot SHA3 commitment over a Poseidon
+        Merkle root computed off\nobreakdash-line over the same
+        canonical sorted leaves.
+  \item The AIR proves $\mathrm{leaf\_hash}(\mathit{code})$ appears
+        in the Poseidon Merkle tree with root
+        $\mathit{set\_root}_{\mathrm{Pos}}$, exhibiting an
+        inclusion path of length $\lceil\log_2 |S|\rceil$ encoded
+        as four trace columns per layer (left child, right child,
+        sibling flag, computed hash); transition constraints
+        enforce $\mathrm{node}_{i+1}^{\mathrm{Pos}} =
+        \mathrm{Poseidon}(\mathit{lhs}_i \,\Vert\, \mathit{rhs}_i)$.
+  \item One additional in\nobreakdash-circuit SHA3 transition pins
+        $\mathit{set\_root}_{\mathrm{SHA3}} =
+        \mathrm{SHA3}(\mathit{node}_{\mathrm{root}}^{\mathrm{Pos}}
+        \,\Vert\, \mathit{label} \,\Vert\, |S|)$ — the verifier's
+        only externally\nobreakdash-anchored boundary check.
+\end{enumerate}
+
+This keeps Poseidon strictly \emph{below} the trust boundary
+(used as a soundness\nobreakdash-amplification gadget, not as
+the binding commitment), so the deployment's public commitment
+is FIPS\nobreakdash-approved in the only place that matters.
+The cost split is reported in \S\ref{sec:eval-compute}: the bulk
+of the prove time goes to the Poseidon Merkle layers, the
+single SHA3 boundary hash dominates the constant factor.
 
 The leaf\nobreakdash-hash function $\mathrm{leaf\_hash}(\mathit{code}) =
 \mathrm{SHA3}(\mathit{tag} \,\Vert\, \mathrm{upper}(\mathit{code}))$
@@ -706,25 +738,28 @@ Table~\ref{tab:compute} reports the measurement.  Three findings:
     \textbf{AIR} & $n_\mathrm{trace}$ & $w$ & $k$ &
       \textbf{prove (ms)} & \textbf{verify (ms)} & \textbf{proof (KiB)} \\
     \midrule
-    Fibonacci    &   $32$ & $2$ & $1$ &  $8.22$ & $1.32$ & $264$ \\
-    Fibonacci    &   $64$ & $2$ & $1$ & $17.37$ & $1.71$ & $292$ \\
-    Fibonacci    &  $128$ & $2$ & $1$ & $29.75$ & $1.52$ & $322$ \\
-    Fibonacci    &  $256$ & $2$ & $1$ & $55.53$ & $1.70$ & $378$ \\
+    Fibonacci    &   $32$ & $2$ & $1$ &   $6.86$ & $1.08$ & $264$ \\
+    Fibonacci    &  $128$ & $2$ & $1$ &  $28.29$ & $1.53$ & $322$ \\
+    Fibonacci    &  $256$ & $2$ & $1$ &  $56.74$ & $1.67$ & $378$ \\
+    Fibonacci    &  $512$ & $2$ & $1$ & $113.75$ & $1.84$ & $411$ \\
     \midrule
-    \textbf{AgeRange32} &   $32$ & $2$ & $2$ & $\mathbf{6.54}$ & $\mathbf{1.15}$ & $264$ \\
-    \textbf{AgeRange32} &   $64$ & $2$ & $2$ & $13.48$ & $1.29$ & $292$ \\
-    \textbf{AgeRange32} &  $128$ & $2$ & $2$ & $27.52$ & $1.47$ & $322$ \\
-    \textbf{AgeRange32} &  $256$ & $2$ & $2$ & $54.96$ & $1.65$ & $378$ \\
+    \textbf{AgeRange32} &   $32$ & $2$ & $2$ & $\mathbf{6.70}$ & $\mathbf{1.14}$ & $264$ \\
+    \textbf{AgeRange32} &  $128$ & $2$ & $2$ &  $28.01$ & $1.46$ & $322$ \\
+    \textbf{AgeRange32} &  $256$ & $2$ & $2$ &  $56.00$ & $1.66$ & $378$ \\
+    \textbf{AgeRange32} &  $512$ & $2$ & $2$ & $112.98$ & $1.83$ & $411$ \\
     \midrule
-    HashRollup   &   $32$ & $4$ & $3$ &  $6.86$ & $1.12$ & $264$ \\
-    HashRollup   &   $64$ & $4$ & $3$ & $14.01$ & $1.32$ & $292$ \\
-    HashRollup   &  $128$ & $4$ & $3$ & $28.51$ & $1.47$ & $322$ \\
-    HashRollup   &  $256$ & $4$ & $3$ & $57.41$ & $1.62$ & $378$ \\
+    HashRollup   &   $32$ & $4$ & $3$ &   $7.10$ & $1.16$ & $264$ \\
+    HashRollup   &  $128$ & $4$ & $3$ &  $29.62$ & $1.47$ & $322$ \\
+    HashRollup   &  $256$ & $4$ & $3$ &  $60.19$ & $1.68$ & $378$ \\
+    HashRollup   &  $512$ & $4$ & $3$ & $121.21$ & $1.85$ & $411$ \\
     \midrule
-    \textbf{PoseidonChain} &   $32$ & $16$ & $16$ & $\phantom{0}\phantom{0}8.04$ & $1.21$ & $264$ \\
-    \textbf{PoseidonChain} &  $256$ & $16$ & $16$ & $\phantom{0}59.79$ & $1.71$ & $378$ \\
-    \textbf{PoseidonChain} &  $512$ & $16$ & $16$ & $117.97$ & $1.86$ & $411$ \\
-    \textbf{PoseidonChain} & $1024$ & $16$ & $16$ & $239.12$ & $2.03$ & $446$ \\
+    \textbf{PoseidonChain} &   $32$ & $16$ & $16$ &  $\phantom{0}10.03$ & $1.21$ & $264$ \\
+    \textbf{PoseidonChain} &  $256$ & $16$ & $16$ &  $\phantom{0}83.27$ & $1.68$ & $378$ \\
+    \textbf{PoseidonChain} &  $512$ & $16$ & $16$ &           $169.43$ & $1.85$ & $411$ \\
+    \midrule
+    \textbf{Sha256DsKsk} &  $128$ & $756$ & $766$ &  $251.13$ & $1.56$ & $322$ \\
+    \textbf{Sha256DsKsk} &  $256$ & $756$ & $766$ &  $566.40$ & $1.72$ & $378$ \\
+    \textbf{Sha256DsKsk} &  $512$ & $756$ & $766$ & $1181.21$ & $1.86$ & $411$ \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -732,24 +767,26 @@ Table~\ref{tab:compute} reports the measurement.  Three findings:
 \paragraph{Implication for the registration AIRs.}  The
 age\nobreakdash-range AIR is the AgeRange32 row of
 Table~\ref{tab:compute} directly.  The country / e\nobreakdash-mail
-Merkle\nobreakdash-path AIR uses a STARK\nobreakdash-friendly
-hash (Poseidon over Goldilocks) for in\nobreakdash-circuit
-verification and is structurally one transition step of the
-PoseidonChain row of the table per Merkle layer; the trace size
-required scales with set\nobreakdash-cardinality through hash
-rounds:\enspace EU\nobreakdash-27 (depth $5$) $\Rightarrow
-n_\mathrm{trace} = 512$, an
-e\nobreakdash-mail allow\nobreakdash-list of $1024$ providers
-(depth $10$) $\Rightarrow n_\mathrm{trace} = 1024$.  At
+Merkle\nobreakdash-path AIR is a dual\nobreakdash-hash composition
+(\S\ref{sec:air-country}): the bulk of the work is a Poseidon
+Merkle path (PoseidonChain rows of the table), and one additional
+in\nobreakdash-circuit SHA3 hash binds the Poseidon root to the
+public FIPS\nobreakdash-approved commitment (Sha256DsKsk row,
+used as a same\nobreakdash-order\nobreakdash-of\nobreakdash-magnitude
+proxy for SHA3\nobreakdash-256\,—\,both are
+Merkle\nobreakdash-Damg\aa{}rd / sponge constructions of comparable
+in\nobreakdash-circuit cost).  Total country\nobreakdash-AIR
+prove time at depth\nobreakdash-$5$ (EU\nobreakdash-27)
+is $\sim\!\num{169}$\,ms (PoseidonChain at $n=512$) plus
+$\sim\!\num{251}$\,ms (one SHA3 transition at $n=128$) $=
+\sim\!\num{420}$\,ms native.  At
 $\num{541232}$\nobreakdash-byte (\num{264}\,KiB) per
-range\nobreakdash-check proof, $\num{421232}$\nobreakdash-byte
-($\num{411}$\,KiB) per EU\nobreakdash-27 country proof, and
-$\num{456736}$\nobreakdash-byte ($\num{446}$\,KiB) per
-$1024$\nobreakdash-leaf e\nobreakdash-mail proof, the
-proof\nobreakdash-bundle size for a deployment that proves age +
-country is $\num{264} + \num{411} = \num{675}$\,KiB.  We use
-this revised bundle size for the end\nobreakdash-to\nobreakdash-end
-projection below.
+range\nobreakdash-check proof and $\num{421232}$\nobreakdash-byte
+($\num{411}$\,KiB) per dual\nobreakdash-hash country proof, the
+proof\nobreakdash-bundle for a deployment that proves age +
+country is $\num{264} + \num{411} = \num{675}$\,KiB.  The two
+proofs are independent and can be produced in parallel where
+the prover has multiple cores.
 
 \paragraph{WASM feasibility (measured on two engines).}  We
 compile the same bench harness to \texttt{wasm32-wasip1} and
@@ -788,64 +825,96 @@ byte\nobreakdash-identical across native, wasmtime, and V8
     \cmidrule(lr){3-5} \cmidrule(lr){6-8}
                  &       & native & wasmtime & V8 & native & wasmtime & V8 \\
     \midrule
-    Fibonacci  &  $32$ &  $8.22$ &  $19.56$ &  $17.31$ & $1.32$ & $2.51$ & $1.94$ \\
-    Fibonacci  &  $64$ & $17.37$ &  $38.87$ &  $34.89$ & $1.71$ & $2.78$ & $2.17$ \\
-    Fibonacci  & $128$ & $29.75$ &  $78.04$ &  $70.27$ & $1.52$ & $3.12$ & $2.38$ \\
-    Fibonacci  & $256$ & $55.53$ & $157.28$ & $141.86$ & $1.70$ & $3.46$ & $2.66$ \\
+    Fibonacci  &  $32$ &   $6.86$ &  $19.56$ &  $17.71$ & $1.08$ & $2.51$ & $1.95$ \\
+    Fibonacci  & $128$ &  $28.29$ &  $78.04$ &  $72.19$ & $1.53$ & $3.12$ & $2.39$ \\
+    Fibonacci  & $256$ &  $56.74$ & $157.28$ & $145.13$ & $1.67$ & $3.46$ & $2.67$ \\
+    Fibonacci  & $512$ & $113.75$ & $315.00$ & $292.88$ & $1.84$ & $3.90$ & $2.94$ \\
     \midrule
-    \textbf{AgeRange32} &  $32$ & $\mathbf{6.54}$ & $\mathbf{19.29}$ & $\mathbf{17.66}$ & $\mathbf{1.15}$ & $\mathbf{2.56}$ & $\mathbf{1.95}$ \\
-    \textbf{AgeRange32} &  $64$ & $13.48$ &  $38.83$ &  $35.24$ & $1.29$ & $2.80$ & $2.18$ \\
-    \textbf{AgeRange32} & $128$ & $27.52$ &  $78.10$ &  $71.29$ & $1.47$ & $3.10$ & $2.48$ \\
-    \textbf{AgeRange32} & $256$ & $54.96$ & $158.21$ & $143.30$ & $1.65$ & $3.61$ & $2.70$ \\
+    \textbf{AgeRange32} &  $32$ & $\mathbf{6.70}$ & $\mathbf{19.29}$ & $\mathbf{17.94}$ & $\mathbf{1.14}$ & $\mathbf{2.56}$ & $\mathbf{1.94}$ \\
+    \textbf{AgeRange32} & $128$ &  $28.01$ &  $78.10$ &  $72.84$ & $1.46$ & $3.10$ & $2.44$ \\
+    \textbf{AgeRange32} & $256$ &  $56.00$ & $158.21$ & $147.23$ & $1.66$ & $3.61$ & $2.71$ \\
+    \textbf{AgeRange32} & $512$ & $112.98$ & $316.00$ & $295.85$ & $1.83$ & $3.92$ & $3.01$ \\
     \midrule
-    HashRollup &  $32$ &  $6.86$ &  $19.55$ &  $17.89$ & $1.12$ & $2.47$ & $1.94$ \\
-    HashRollup &  $64$ & $14.01$ &  $39.50$ &  $36.08$ & $1.32$ & $2.77$ & $2.19$ \\
-    HashRollup & $128$ & $28.51$ &  $79.42$ &  $72.73$ & $1.47$ & $3.12$ & $2.45$ \\
-    HashRollup & $256$ & $57.41$ & $159.87$ & $147.05$ & $1.62$ & $3.43$ & $2.72$ \\
+    HashRollup &  $32$ &   $7.10$ &  $19.55$ &  $18.59$ & $1.16$ & $2.47$ & $1.97$ \\
+    HashRollup & $128$ &  $29.62$ &  $79.42$ &  $76.21$ & $1.47$ & $3.12$ & $2.49$ \\
+    HashRollup & $256$ &  $60.19$ & $159.87$ & $154.09$ & $1.68$ & $3.43$ & $2.74$ \\
+    HashRollup & $512$ & $121.21$ & $320.00$ & $312.11$ & $1.85$ & $3.95$ & $3.10$ \\
     \midrule
-    \textbf{PoseidonChain} &   $32$ & $\phantom{0}\phantom{0}8.04$ & $\phantom{0}20.22$ & $\phantom{0}18.73$ & $1.21$ & $2.53$ & $2.03$ \\
-    \textbf{PoseidonChain} &  $256$ & $\phantom{0}59.79$ & $160.80$ & $149.95$ & $1.71$ & $3.46$ & $2.74$ \\
-    \textbf{PoseidonChain} &  $512$ & $\mathbf{117.97}$ & $\mathbf{324.12}$ & $\mathbf{301.70}$ & $\mathbf{1.86}$ & $\mathbf{3.94}$ & $\mathbf{3.05}$ \\
-    \textbf{PoseidonChain} & $1024$ & $239.12$ & $654.31$ & $608.38$ & $2.03$ & $4.14$ & $3.29$ \\
+    \textbf{PoseidonChain} &  $32$ &  $10.03$ &  $26.49$ &  $26.02$ & $1.21$ & $2.53$ & $1.98$ \\
+    \textbf{PoseidonChain} & $256$ &  $83.27$ & $217.33$ & $217.40$ & $1.68$ & $3.46$ & $2.75$ \\
+    \textbf{PoseidonChain} & $512$ & $\mathbf{169.43}$ & $\mathbf{441.67}$ & $\mathbf{439.89}$ & $\mathbf{1.85}$ & $\mathbf{3.94}$ & $\mathbf{3.02}$ \\
+    \midrule
+    \textbf{Sha256DsKsk} & $128$ & $\mathbf{251.13}$ & $\mathbf{702.26}$ & $\mathbf{683.01}$ & $\mathbf{1.56}$ & $\mathbf{3.14}$ & $\mathbf{2.48}$ \\
+    \textbf{Sha256DsKsk} & $256$ & $566.40$ & $1476.35$ & $1461.52$ & $1.72$ & $3.51$ & $2.85$ \\
+    \textbf{Sha256DsKsk} & $512$ & $1181.21$ & $3139.94$ & $3140.00$ & $1.86$ & $3.86$ & $3.10$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-\paragraph{End\nobreakdash-to\nobreakdash-end browser registration
-(age + EU\nobreakdash-27 country).}  Combining the
-per\nobreakdash-attribute V8 measurements from
-Table~\ref{tab:wasm}: an AgeRange32 prove at $n_\mathrm{trace} =
-32$ takes $\sim\!\num{18}$\,ms; a Merkle\nobreakdash-path country
-proof against a depth\nobreakdash-$5$ Poseidon tree
-($n_\mathrm{trace} = 512$) takes $\sim\!\num{302}$\,ms; total
-client\nobreakdash-side prove time is $\sim\!\num{320}$\,ms.  The
-$\num{264} + \num{411} = \num{675}$\,KiB combined proof bundle
-takes $\sim\!\num{540}$\,ms to upload over a $4$G connection
-($\sim\!10$\,Mbps up); the server's native verify is
-$\sim\!\num{3}$\,ms.  Total wall\nobreakdash-clock latency:
-$\sim\!\num{870}$\,ms — within the
-one\nobreakdash-second perceptual threshold for an interactive
-form submission, comfortably ahead of current PII\nobreakdash-only
-registration flows that already take $1$\textendash$3$\,seconds
-for an e\nobreakdash-mail verification round\nobreakdash-trip.
-We treat this as conclusive evidence for the
-WASM\nobreakdash-prover deployability claim made in
-\S\ref{sec:design}.
+\paragraph{End\nobreakdash-to\nobreakdash-end registration cost
+(age + EU\nobreakdash-27 country, FIPS\nobreakdash-compliant
+dual hash).}  Reading the V8 column of Table~\ref{tab:wasm}: the
+AgeRange32 proof at $n_\mathrm{trace} = 32$ takes
+$\sim\!\num{18}$\,ms client\nobreakdash-side; the country
+proof's two contributions are PoseidonChain at $n=512$
+($\sim\!\num{440}$\,ms) and one Sha256DsKsk transition at
+$n=128$ ($\sim\!\num{683}$\,ms), giving total
+client\nobreakdash-side prove time
+$\sim\!\num{18} + \num{440} + \num{683} = \num{1141}$\,ms.  The
+$\num{675}$\,KiB combined proof\nobreakdash-bundle upload
+takes $\sim\!\num{540}$\,ms over a $4$G connection
+($\sim\!10$\,Mbps up); native server verify is $\sim\!\num{5}$\,ms.
+Total client\nobreakdash-prover wall\nobreakdash-clock:
+$\sim\!\num{1.7}$\,s.
 
-\paragraph{Scaling to deeper set memberships.}  The country AIR
-cost scales linearly in Merkle depth.  An e\nobreakdash-mail
-allow\nobreakdash-list of $\num{1024}$ providers (depth $10$)
-runs at $n_\mathrm{trace} = 1024$, $\sim\!\num{608}$\,ms V8 prove
-time per attribute, pushing total registration latency to
-$\sim\!\num{1.4}$\,s when added to the age + country bundle.
-This is the regime where a server\nobreakdash-side prover (the
-default Phase~1 deployment, where the client uploads only raw
-attributes and the server proves and stores) is preferable: the
-same depth\nobreakdash-$10$ proof runs in $\sim\!\num{239}$\,ms
-on a native server core (Table~\ref{tab:compute}), so a fleet of
-$\num{16}$ cores sustains $\sim\!\num{4000}$\,registrations per
-minute even at the deepest set\nobreakdash-membership we
-measured.
+This crosses the one\nobreakdash-second perceptual threshold and
+makes a pure client\nobreakdash-side prover deployment of the
+\emph{full} dual\nobreakdash-hash registration flow inadvisable
+without further engineering.  The honest reading of
+Table~\ref{tab:wasm} is that the
+client\nobreakdash-side\nobreakdash-prover claim from
+\S\ref{sec:design} is true for the cheap
+Boolean\nobreakdash-decomposition predicates (age, postcode,
+income) but breaks for the FIPS\nobreakdash-binding hash hop in a
+Merkle\nobreakdash-path AIR — exactly the prediction the
+$\num{683}$\,ms\nobreakdash-per\nobreakdash-SHA3 row of
+Table~\ref{tab:wasm} forces.  The
+deployment\nobreakdash-relevant conclusion is below.
+
+\paragraph{Recommended deployment topology.}  The
+practical configuration is a hybrid:
+
+\begin{itemize}
+  \item \textbf{Client\nobreakdash-side prover} for the
+        bit\nobreakdash-decomposition predicates (age, postcode,
+        income).  V8 prove time
+        $\sim\!\num{18}$\,ms\,/\,attribute,
+        proof upload $\num{264}$\,KiB\,/\,attribute, total
+        $\sim\!\num{18} + \num{200}$\,ms over
+        4G — under the perceptual threshold.
+  \item \textbf{Server\nobreakdash-side prover} for the
+        FIPS\nobreakdash-compliant set\nobreakdash-membership
+        predicates (country, e\nobreakdash-mail).  Native
+        prove time $\sim\!\num{420}$\,ms per attribute (the
+        Poseidon $\num{169}$\,ms\,$+$\,SHA3 $\num{251}$\,ms split
+        of \S\ref{sec:air-country}); the client uploads only
+        the raw attribute, the server stores only the resulting
+        proof bytes plus the policy JSON.  At
+        $\num{420}$\,ms\,/\,proof on a single core, a $\num{16}$\nobreakdash-core
+        server fleet sustains
+        $\sim\!\num{2300}$\nobreakdash-registrations\nobreakdash-per\nobreakdash-minute
+        steady\nobreakdash-state.
+\end{itemize}
+
+The hybrid topology preserves the privacy property in both
+scenarios — the database never holds DOB, country, postcode,
+e\nobreakdash-mail or income in cleartext — and respects FIPS
+boundaries.  The narrow window in which the server briefly
+holds the country / e\nobreakdash-mail attribute during proof
+generation is the same active\nobreakdash-compromise window
+discussed in \S\ref{sec:threat}; for the
+client\nobreakdash-prover\nobreakdash-only attributes it is
+eliminated entirely.
 
 \subsection{Breach simulation}
 \label{sec:eval-breach}

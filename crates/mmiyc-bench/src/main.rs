@@ -155,7 +155,7 @@ enum Cmd {
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-enum AirArg { Fibonacci, AgeRange, HashRollup, Poseidon, All }
+enum AirArg { Fibonacci, AgeRange, HashRollup, Poseidon, Sha256, All }
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -311,11 +311,13 @@ fn run_bench(air: AirArg, log_rows: &[u32], iters: usize, queries: usize) -> Res
         AirArg::AgeRange   => vec![("AgeRange32",    AirType::AgeRange32)],
         AirArg::HashRollup => vec![("HashRollup",    AirType::HashRollup)],
         AirArg::Poseidon   => vec![("PoseidonChain", AirType::PoseidonChain)],
+        AirArg::Sha256     => vec![("Sha256DsKsk",   AirType::Sha256DsKsk)],
         AirArg::All        => vec![
             ("Fibonacci",     AirType::Fibonacci),
             ("AgeRange32",    AirType::AgeRange32),
             ("HashRollup",    AirType::HashRollup),
             ("PoseidonChain", AirType::PoseidonChain),
+            ("Sha256DsKsk",   AirType::Sha256DsKsk),
         ],
     };
 
@@ -323,25 +325,34 @@ fn run_bench(air: AirArg, log_rows: &[u32], iters: usize, queries: usize) -> Res
     println!("Calibration: 1/rho_0 = 32 blowup, sextic extension, {} queries, arity-2 FRI", queries);
     println!("Median of {} prove+verify cycles per row count.", iters);
     println!();
-    println!("{:<11} {:>6} {:>4} {:>4} {:>10} {:>10} {:>10} {:>14}",
-             "AIR", "n_rows", "w", "k", "setup_ms", "prove_ms", "verify_ms", "proof_bytes");
+    println!("{:<13} {:>6} {:>4} {:>4} {:>9} {:>9} {:>10} {:>10} {:>10}",
+             "AIR", "n_rows", "w", "k",
+             "setup_ms", "fri_ms", "TOTAL_ms", "verify_ms", "proof_b");
     for (label, air) in &airs {
         let w = air.width();
         let k = air.num_constraints();
         for &log_n in log_rows {
             let n_trace = 1usize << log_n;
             let s = stark_bench::median(*air, n_trace, queries, iters);
-            println!("{:<11} {:>6} {:>4} {:>4} {:>10.2} {:>10.2} {:>10.2} {:>14}",
+            // TOTAL prove = setup (trace + LDE + composition) + FRI
+            // (commit / fold / query).  This is the user-facing
+            // "time to produce a proof"; the breakdown is kept for
+            // diagnostic purposes — for large AIRs (Sha256DsKsk)
+            // setup dominates; for small AIRs (AgeRange32) FRI does.
+            let total = s.setup_ms + s.prove_ms;
+            println!("{:<13} {:>6} {:>4} {:>4} {:>9.2} {:>9.2} {:>10.2} {:>10.2} {:>10}",
                      label, n_trace, w, k,
-                     s.setup_ms, s.prove_ms, s.verify_ms, s.proof_bytes);
+                     s.setup_ms, s.prove_ms, total, s.verify_ms, s.proof_bytes);
         }
     }
     println!();
     println!("AgeRange32 (w=2, k=2): first-class AIR for age / income / postcode");
     println!("range predicates.  Fibonacci (k=1) and HashRollup (k=3) bracket it.");
-    println!("PoseidonChain (w=16, k=16) is the structural reference for the");
-    println!("country / email Merkle-path AIRs (a Poseidon Merkle node is one");
-    println!("step of this chain), pending a first-class MerklePath variant.");
+    println!("PoseidonChain (w=16, k=16): in-circuit Poseidon round-function,");
+    println!("structural reference for the bulk of the Merkle-path AIRs.");
+    println!("Sha256DsKsk (w=756): in-circuit SHA-256, same-order-of-magnitude");
+    println!("proxy for the SHA3 trust-boundary hash in the dual-hash design");
+    println!("(Poseidon inside, SHA3 at the boundary for FIPS compliance).");
     Ok(())
 }
 
