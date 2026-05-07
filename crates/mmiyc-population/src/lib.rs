@@ -22,7 +22,12 @@ pub mod attributes;
 pub mod generate;
 pub mod io;
 pub mod breach;
+pub mod regulatory;
 
 pub use attributes::User;
 pub use generate::{generate_population, GenerationConfig};
 pub use breach::{breach_simulate, BreachResult, AuxiliaryDatabase};
+pub use regulatory::{
+    analyze, sensitivity_breach_probability, sensitivity_per_record_cost,
+    RegulatoryAnalysis, RegulatoryParams,
+};
