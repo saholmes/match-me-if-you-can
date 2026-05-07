@@ -2,11 +2,12 @@
 resolver = "2"
 
 members = [
-    "crates/mmiyc-air",      # Algebraic Intermediate Representations for PII attributes
-    "crates/mmiyc-prover",   # proof generation (server-side initially; WASM target as Phase 2)
-    "crates/mmiyc-verifier", # native proof verification
-    "crates/mmiyc-server",   # axum HTTP service: /register, /verify-*
-    "crates/mmiyc-bench",    # storage / latency / breach harness
+    "crates/mmiyc-air",         # Algebraic Intermediate Representations for PII attributes
+    "crates/mmiyc-prover",      # proof generation (server-side initially; WASM target as Phase 2)
+    "crates/mmiyc-verifier",    # native proof verification
+    "crates/mmiyc-population",  # synthetic users + breach-simulation harness
+    "crates/mmiyc-server",      # axum HTTP service: /register, /verify-*
+    "crates/mmiyc-bench",       # storage / latency / breach CLI harness
 ]
 
 [workspace.package]

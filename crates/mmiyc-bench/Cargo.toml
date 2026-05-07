@@ -11,9 +11,10 @@ name = "mmiyc-bench"
 path = "src/main.rs"
 
 [dependencies]
-mmiyc-air      = { path = "../mmiyc-air" }
-mmiyc-prover   = { path = "../mmiyc-prover" }
-mmiyc-verifier = { path = "../mmiyc-verifier" }
+mmiyc-air        = { path = "../mmiyc-air" }
+mmiyc-prover     = { path = "../mmiyc-prover" }
+mmiyc-verifier   = { path = "../mmiyc-verifier" }
+mmiyc-population = { path = "../mmiyc-population" }
 
 clap        = { workspace = true }
 serde       = { workspace = true }
