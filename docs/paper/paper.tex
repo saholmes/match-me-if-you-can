@@ -862,6 +862,73 @@ $\sim\!\pounds 190{,}710$.  In every parameter regime we measured,
 the regulatory savings dominate the storage cost by at least two
 orders of magnitude.
 
+\subsection{Reproducibility}
+\label{sec:eval-repro}
+
+Every number reported in this section comes from a deterministic
+run of the open\nobreakdash-source bench harness against the
+canonical $\num{10000}$\nobreakdash-user UK\nobreakdash-only
+synthetic population (PRNG seed $2026$, today\nobreakdash-days
+$\num{20000}$, auxiliary seed $9999$).  The full reproduction
+recipe is four CLI calls:
+
+\begin{verbatim}
+$ cargo run -p mmiyc-bench --release -- \
+    generate --n 10000 --uk-only \
+             --seed 2026 --today-days 20000 \
+             --out data/synthetic-users.csv
+
+$ cargo run -p mmiyc-bench --release -- \
+    storage --input data/synthetic-users.csv \
+            --proof-bytes 6500 --attributes 2
+
+$ cargo run -p mmiyc-bench --release -- \
+    breach --input data/synthetic-users.csv \
+           --aux-overlap 5000 --aux-extra 50000 \
+           --aux-seed 9999
+
+$ cargo run -p mmiyc-bench --release -- \
+    regulatory --input data/synthetic-users.csv \
+               --aux-overlap 5000 --aux-extra 50000 \
+               --aux-seed 9999 \
+               --breach-prob 0.05 \
+               --per-record-cost 130 \
+               --unintelligibility-discount 0.01
+\end{verbatim}
+
+Table~\ref{tab:repro} maps each table and figure in this
+section to the command above whose stdout it was extracted from.
+
+\begin{table}[h]
+  \centering
+  \caption{Reproducibility map.  Each row points at the single
+    CLI invocation whose deterministic stdout produced that
+    table or figure.}
+  \label{tab:repro}
+  \begin{tabular}{l l l}
+    \toprule
+    \textbf{Element} & \textbf{Source command}                 & \textbf{Determined by}              \\
+    \midrule
+    Table~\ref{tab:storage}     & \texttt{mmiyc-bench storage}    & \texttt{--proof-bytes}, \texttt{--attributes} \\
+    Table~\ref{tab:breach}      & \texttt{mmiyc-bench breach}     & seed, \texttt{--aux-*}              \\
+    Table~\ref{tab:regulatory}  & \texttt{mmiyc-bench regulatory} & all params at default               \\
+    Fig.~\ref{fig:sensitivity}  & \texttt{mmiyc-bench regulatory} & sweep printed inline                \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The end\nobreakdash-to\nobreakdash-end demo (\S\ref{sec:impl}) is
+exercised by \texttt{cargo test -p mmiyc-server} and includes nine
+HTTP integration tests that pin the unified wire format under both
+storage scenarios.  In particular,
+\texttt{pii\_register\_persists\_attributes\_verbatim} asserts the
+exact column tuple that an adversary would extract from a
+post\nobreakdash-breach SQLite snapshot, and the matched
+\texttt{proofs\_register\_*} tests pin the asymmetric registration
+behaviour: under\nobreakdash-policy inputs that succeed in the PII
+scenario are rejected at registration in the proofs scenario,
+because the prover refuses.
+
 \section{Discussion and Limitations}
 \label{sec:discussion}
 
