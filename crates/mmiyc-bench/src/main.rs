@@ -155,7 +155,7 @@ enum Cmd {
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-enum AirArg { Fibonacci, AgeRange, HashRollup, All }
+enum AirArg { Fibonacci, AgeRange, HashRollup, Poseidon, All }
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -307,13 +307,15 @@ fn run_bench(air: AirArg, log_rows: &[u32], iters: usize, queries: usize) -> Res
     use deep_ali::air_workloads::AirType;
 
     let airs: Vec<(&str, AirType)> = match air {
-        AirArg::Fibonacci  => vec![("Fibonacci",  AirType::Fibonacci)],
-        AirArg::AgeRange   => vec![("AgeRange32", AirType::AgeRange32)],
-        AirArg::HashRollup => vec![("HashRollup", AirType::HashRollup)],
+        AirArg::Fibonacci  => vec![("Fibonacci",     AirType::Fibonacci)],
+        AirArg::AgeRange   => vec![("AgeRange32",    AirType::AgeRange32)],
+        AirArg::HashRollup => vec![("HashRollup",    AirType::HashRollup)],
+        AirArg::Poseidon   => vec![("PoseidonChain", AirType::PoseidonChain)],
         AirArg::All        => vec![
-            ("Fibonacci",  AirType::Fibonacci),
-            ("AgeRange32", AirType::AgeRange32),
-            ("HashRollup", AirType::HashRollup),
+            ("Fibonacci",     AirType::Fibonacci),
+            ("AgeRange32",    AirType::AgeRange32),
+            ("HashRollup",    AirType::HashRollup),
+            ("PoseidonChain", AirType::PoseidonChain),
         ],
     };
 
@@ -335,11 +337,11 @@ fn run_bench(air: AirArg, log_rows: &[u32], iters: usize, queries: usize) -> Res
         }
     }
     println!();
-    println!("AgeRange32 is the first-class deep_ali::AirType variant backing");
-    println!("the age-range / income-bracket / postcode-prefix predicates in");
-    println!("the paper (w=2 Boolean cols + 2 deg-2 transitions); Fibonacci");
-    println!("(k=1) and HashRollup (k=3) bracket it for context, and HashRollup");
-    println!("is also the structural proxy for the wider Merkle-path AIRs.");
+    println!("AgeRange32 (w=2, k=2): first-class AIR for age / income / postcode");
+    println!("range predicates.  Fibonacci (k=1) and HashRollup (k=3) bracket it.");
+    println!("PoseidonChain (w=16, k=16) is the structural reference for the");
+    println!("country / email Merkle-path AIRs (a Poseidon Merkle node is one");
+    println!("step of this chain), pending a first-class MerklePath variant.");
     Ok(())
 }
 

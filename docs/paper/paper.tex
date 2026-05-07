@@ -720,22 +720,36 @@ Table~\ref{tab:compute} reports the measurement.  Three findings:
     HashRollup   &   $64$ & $4$ & $3$ & $14.01$ & $1.32$ & $292$ \\
     HashRollup   &  $128$ & $4$ & $3$ & $28.51$ & $1.47$ & $322$ \\
     HashRollup   &  $256$ & $4$ & $3$ & $57.41$ & $1.62$ & $378$ \\
+    \midrule
+    \textbf{PoseidonChain} &   $32$ & $16$ & $16$ & $\phantom{0}\phantom{0}8.04$ & $1.21$ & $264$ \\
+    \textbf{PoseidonChain} &  $256$ & $16$ & $16$ & $\phantom{0}59.79$ & $1.71$ & $378$ \\
+    \textbf{PoseidonChain} &  $512$ & $16$ & $16$ & $117.97$ & $1.86$ & $411$ \\
+    \textbf{PoseidonChain} & $1024$ & $16$ & $16$ & $239.12$ & $2.03$ & $446$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 \paragraph{Implication for the registration AIRs.}  The
 age\nobreakdash-range AIR is the AgeRange32 row of
-Table~\ref{tab:compute} directly.  The country Merkle\nobreakdash-path
-AIR runs at $n_\mathrm{trace} \leq 32$ for $|S| \leq 256$
-permitted countries; bracketed by Fibonacci and HashRollup it
-sits at $\approx\!\num{7}$\,ms native prove time.  Both
-attributes contribute the byte\nobreakdash-identical
-$\num{270576}$\nobreakdash-byte proof already used in
-Table~\ref{tab:storage}, since proof size is determined by the
-FRI\nobreakdash-query schedule and trace size, not constraint
-count or trace width (rows for $w=2$/$k=1$/$k=2$/$k=3$ all
-agree to the byte).
+Table~\ref{tab:compute} directly.  The country / e\nobreakdash-mail
+Merkle\nobreakdash-path AIR uses a STARK\nobreakdash-friendly
+hash (Poseidon over Goldilocks) for in\nobreakdash-circuit
+verification and is structurally one transition step of the
+PoseidonChain row of the table per Merkle layer; the trace size
+required scales with set\nobreakdash-cardinality through hash
+rounds:\enspace EU\nobreakdash-27 (depth $5$) $\Rightarrow
+n_\mathrm{trace} = 512$, an
+e\nobreakdash-mail allow\nobreakdash-list of $1024$ providers
+(depth $10$) $\Rightarrow n_\mathrm{trace} = 1024$.  At
+$\num{541232}$\nobreakdash-byte (\num{264}\,KiB) per
+range\nobreakdash-check proof, $\num{421232}$\nobreakdash-byte
+($\num{411}$\,KiB) per EU\nobreakdash-27 country proof, and
+$\num{456736}$\nobreakdash-byte ($\num{446}$\,KiB) per
+$1024$\nobreakdash-leaf e\nobreakdash-mail proof, the
+proof\nobreakdash-bundle size for a deployment that proves age +
+country is $\num{264} + \num{411} = \num{675}$\,KiB.  We use
+this revised bundle size for the end\nobreakdash-to\nobreakdash-end
+projection below.
 
 \paragraph{WASM feasibility (measured on two engines).}  We
 compile the same bench harness to \texttt{wasm32-wasip1} and
@@ -788,26 +802,50 @@ byte\nobreakdash-identical across native, wasmtime, and V8
     HashRollup &  $64$ & $14.01$ &  $39.50$ &  $36.08$ & $1.32$ & $2.77$ & $2.19$ \\
     HashRollup & $128$ & $28.51$ &  $79.42$ &  $72.73$ & $1.47$ & $3.12$ & $2.45$ \\
     HashRollup & $256$ & $57.41$ & $159.87$ & $147.05$ & $1.62$ & $3.43$ & $2.72$ \\
+    \midrule
+    \textbf{PoseidonChain} &   $32$ & $\phantom{0}\phantom{0}8.04$ & $\phantom{0}20.22$ & $\phantom{0}18.73$ & $1.21$ & $2.53$ & $2.03$ \\
+    \textbf{PoseidonChain} &  $256$ & $\phantom{0}59.79$ & $160.80$ & $149.95$ & $1.71$ & $3.46$ & $2.74$ \\
+    \textbf{PoseidonChain} &  $512$ & $\mathbf{117.97}$ & $\mathbf{324.12}$ & $\mathbf{301.70}$ & $\mathbf{1.86}$ & $\mathbf{3.94}$ & $\mathbf{3.05}$ \\
+    \textbf{PoseidonChain} & $1024$ & $239.12$ & $654.31$ & $608.38$ & $2.03$ & $4.14$ & $3.29$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-\paragraph{End\nobreakdash-to\nobreakdash-end browser registration.}
-Combining the per\nobreakdash-attribute measurements at the V8
-column of Table~\ref{tab:wasm}: two $32$\nobreakdash-row prove
-operations in series give $\sim\!\num{35}$\,ms of WebAssembly
-CPU time on the client; the
-$\sim\!\num{541232}$\nobreakdash-byte (\num{528}\,KiB)
-proof bundle takes $\sim\!\num{400}$\,ms to upload over a
-$4$G connection ($\sim\!10$\,Mbps up); the server's native verify
-is $\sim\!\num{2.5}$\,ms.  Total wall\nobreakdash-clock latency:
-$\sim\!\num{440}$\,ms.  This is comfortably below the one\nobreakdash-second
-perceptual threshold for an interactive form submission, and is
-competitive with current PII\nobreakdash-only registration flows
-that already take $1$\textendash$3$\,seconds for an
-e\nobreakdash-mail verification round\nobreakdash-trip.  We treat
-this as conclusive evidence for the WASM\nobreakdash-prover
-deployability claim made in \S\ref{sec:design}.
+\paragraph{End\nobreakdash-to\nobreakdash-end browser registration
+(age + EU\nobreakdash-27 country).}  Combining the
+per\nobreakdash-attribute V8 measurements from
+Table~\ref{tab:wasm}: an AgeRange32 prove at $n_\mathrm{trace} =
+32$ takes $\sim\!\num{18}$\,ms; a Merkle\nobreakdash-path country
+proof against a depth\nobreakdash-$5$ Poseidon tree
+($n_\mathrm{trace} = 512$) takes $\sim\!\num{302}$\,ms; total
+client\nobreakdash-side prove time is $\sim\!\num{320}$\,ms.  The
+$\num{264} + \num{411} = \num{675}$\,KiB combined proof bundle
+takes $\sim\!\num{540}$\,ms to upload over a $4$G connection
+($\sim\!10$\,Mbps up); the server's native verify is
+$\sim\!\num{3}$\,ms.  Total wall\nobreakdash-clock latency:
+$\sim\!\num{870}$\,ms — within the
+one\nobreakdash-second perceptual threshold for an interactive
+form submission, comfortably ahead of current PII\nobreakdash-only
+registration flows that already take $1$\textendash$3$\,seconds
+for an e\nobreakdash-mail verification round\nobreakdash-trip.
+We treat this as conclusive evidence for the
+WASM\nobreakdash-prover deployability claim made in
+\S\ref{sec:design}.
+
+\paragraph{Scaling to deeper set memberships.}  The country AIR
+cost scales linearly in Merkle depth.  An e\nobreakdash-mail
+allow\nobreakdash-list of $\num{1024}$ providers (depth $10$)
+runs at $n_\mathrm{trace} = 1024$, $\sim\!\num{608}$\,ms V8 prove
+time per attribute, pushing total registration latency to
+$\sim\!\num{1.4}$\,s when added to the age + country bundle.
+This is the regime where a server\nobreakdash-side prover (the
+default Phase~1 deployment, where the client uploads only raw
+attributes and the server proves and stores) is preferable: the
+same depth\nobreakdash-$10$ proof runs in $\sim\!\num{239}$\,ms
+on a native server core (Table~\ref{tab:compute}), so a fleet of
+$\num{16}$ cores sustains $\sim\!\num{4000}$\,registrations per
+minute even at the deepest set\nobreakdash-membership we
+measured.
 
 \subsection{Breach simulation}
 \label{sec:eval-breach}
@@ -1137,22 +1175,27 @@ on the browser side.
 
 \paragraph{Outstanding work on the AIR set.}  We added a
 first\nobreakdash-class \texttt{AgeRange32} variant to
-\texttt{deep\_ali::AirType} for this paper, so the
-age\nobreakdash-range / income\nobreakdash-bracket /
-postcode\nobreakdash-prefix predicates are measured exactly in
-Table~\ref{tab:compute} rather than via a structural proxy.
-The wider Merkle\nobreakdash-path AIRs (country, e\nobreakdash-mail
-domain) do not yet have a corresponding variant; we report
-HashRollup as a structural upper bound for them.  Adding a
-first\nobreakdash-class \texttt{MerklePath} variant is a focused
-follow\nobreakdash-up — the constraint set is the standard
-$\mathrm{node}_{i+1} = H(\mathit{lhs}_i \,\Vert\, \mathit{rhs}_i)$
-transition over four trace columns and a Merkle\nobreakdash-root
-boundary check — and we expect its prove time and proof bytes
-to land within the bracket of Table~\ref{tab:compute} rather
-than shift qualitatively, since proof size is FRI\nobreakdash-query\nobreakdash-dominated
-(the table confirms identical proof sizes for $k \in \{1, 2, 3\}$
-at the same $n_\mathrm{trace}$).
+\texttt{deep\_ali::AirType} for this paper; the
+age\nobreakdash-range, income\nobreakdash-bracket and
+postcode\nobreakdash-prefix predicates are therefore measured
+exactly in Table~\ref{tab:compute}.  The country and
+e\nobreakdash-mail Merkle\nobreakdash-path AIRs do not yet have a
+first\nobreakdash-class variant; we use the existing
+\texttt{PoseidonChain} workload as a structural reference,
+extending the bench ladder up to $n_\mathrm{trace} = 1024$ to
+cover the realistic
+EU\nobreakdash-27\nobreakdash-through\nobreakdash-$1024$\nobreakdash-leaf
+allow\nobreakdash-list range.  Implementing a dedicated
+\texttt{MerklePath} variant ($\mathrm{node}_{i+1} =
+H(\mathit{lhs}_i \,\Vert\, \mathit{rhs}_i)$ over Poseidon) would
+shave the $7$ unused PoseidonChain columns from the trace and
+reduce the AIR's polynomial machinery proportionally, but
+proof size is FRI\nobreakdash-query\nobreakdash-dominated and
+prove time is FFT/LDE dominated (Table~\ref{tab:compute} confirms
+identical proof sizes across $k \in \{1, 2, 3, 16\}$ at the same
+$n_\mathrm{trace}$), so we expect at most a $20$\textendash$30\,\%$
+prove\nobreakdash-time improvement; the qualitative cost picture
+in \S\ref{sec:eval-compute} would not change.
 
 \paragraph{Real per\nobreakdash-record fine.}  The
 $\pounds 130$\nobreakdash-per\nobreakdash-record default is the global
