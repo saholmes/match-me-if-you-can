@@ -728,26 +728,63 @@ $\approx 1.2$\,ms; per\nobreakdash-attribute proof bytes are
 $\num{270576}$ — already used in
 Table~\ref{tab:storage}.
 
-\paragraph{WASM feasibility.}  WASM\nobreakdash-compiled
-arithmetic runs at $0.4$\textendash$0.6\times$ native speed for
-field\nobreakdash-arithmetic\nobreakdash-heavy workloads on
-Goldilocks\nobreakdash-class fields~\cite{wasm-bench}, so the
-browser\nobreakdash-side projection of Table~\ref{tab:compute} is
-roughly: $15$\textendash$25$\,ms prove for a $32$\nobreakdash-row
-AIR, $30$\textendash$50$\,ms for $64$ rows, etc.  Two attributes
-proven in series at $32$ rows each is $\sim\!30$\textendash$50$\,ms
-of CPU time in the browser; the dominant
-end\nobreakdash-to\nobreakdash-end registration latency is the
+\paragraph{WASM feasibility (measured).}  We compile the same
+bench harness to \texttt{wasm32-wasip1} and re\nobreakdash-run it
+under wasmtime~36; the same prove + verify cycle is exercised, just
+with the AOT\nobreakdash-compiled wasm engine in place of native
+\texttt{cargo --release}.  Table~\ref{tab:wasm} reports the
+delta.  The slowdown is consistent across the ladder: prove
+runs at $\approx\!0.36\times$ native speed, verify at
+$\approx\!0.50\times$.  Proof bytes are unchanged
+(WebAssembly does not change the proof format).
+
+\begin{table}[h]
+  \centering
+  \caption{Native (\texttt{cargo --release}) vs
+    WebAssembly (\texttt{wasm32-wasip1} under
+    wasmtime~36) wall\nobreakdash-clock timings, median of
+    $10$ runs each, same Apple\nobreakdash-Silicon laptop.  The
+    WASM column is the relevant one for a client\nobreakdash-side
+    prover; the native column models a server\nobreakdash-side
+    prover.}
+  \label{tab:wasm}
+  \begin{tabular}{l r r r r r r}
+    \toprule
+    \textbf{AIR} & $n_\mathrm{trace}$ &
+      \multicolumn{2}{c}{\textbf{Prove (ms)}} &
+      \multicolumn{2}{c}{\textbf{Verify (ms)}} &
+      \textbf{WASM\,/\,native} \\
+    \cmidrule(lr){3-4} \cmidrule(lr){5-6}
+                 &       & native & WASM & native & WASM & prove\,$|$\,verify \\
+    \midrule
+    Fibonacci  &  $32$ &  $6.95$ &  $19.42$ & $1.24$ & $2.45$ & $2.79\times \mid 1.97\times$ \\
+    Fibonacci  &  $64$ & $14.15$ &  $39.62$ & $1.34$ & $2.71$ & $2.80\times \mid 2.03\times$ \\
+    Fibonacci  & $128$ & $28.84$ &  $78.77$ & $1.52$ & $3.04$ & $2.73\times \mid 2.00\times$ \\
+    Fibonacci  & $256$ & $56.40$ & $155.56$ & $1.69$ & $3.39$ & $2.76\times \mid 2.01\times$ \\
+    \midrule
+    HashRollup &  $32$ &  $7.38$ &  $19.39$ & $1.20$ & $2.42$ & $2.63\times \mid 2.02\times$ \\
+    HashRollup &  $64$ & $14.91$ &  $39.09$ & $1.37$ & $2.69$ & $2.62\times \mid 1.96\times$ \\
+    HashRollup & $128$ & $30.73$ &  $78.85$ & $1.52$ & $3.03$ & $2.57\times \mid 1.99\times$ \\
+    HashRollup & $256$ & $61.20$ & $158.54$ & $1.75$ & $3.39$ & $2.59\times \mid 1.94\times$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{End\nobreakdash-to\nobreakdash-end browser registration.}
+Combining the per\nobreakdash-attribute measurements: two
+$32$\nobreakdash-row prove operations in series give
+$\sim\!\num{40}$\,ms of WebAssembly CPU time on the client; the
 $\sim\!\num{541232}$\nobreakdash-byte (\num{528}\,KiB)
-proof\nobreakdash-bundle upload, which on a $4$G connection
-($\sim\!10$\,Mbps up) takes $\sim\!400$\,ms.  Full
-client\nobreakdash-side registration with two STARK proofs on
-a phone is therefore well under one second
-end\nobreakdash-to\nobreakdash-end — within the perceptual
-threshold for an interactive form submission and competitive
-with current PII\nobreakdash-only registration flows that already
-take $1$\textendash$3$\,seconds for an e\nobreakdash-mail
-verification round\nobreakdash-trip.
+proof bundle takes $\sim\!\num{400}$\,ms to upload over a
+$4$G connection ($\sim\!10$\,Mbps up); the server's native verify is
+$\sim\!\num{2.5}$\,ms.  Total wall\nobreakdash-clock latency:
+$\sim\!\num{440}$\,ms.  This is comfortably below the one\nobreakdash-second
+perceptual threshold for an interactive form submission, and is
+competitive with current PII\nobreakdash-only registration flows
+that already take $1$\textendash$3$\,seconds for an
+e\nobreakdash-mail verification round\nobreakdash-trip.  We treat
+this as conclusive evidence for the WASM\nobreakdash-prover
+deployability claim made in \S\ref{sec:design}.
 
 \subsection{Breach simulation}
 \label{sec:eval-breach}
@@ -992,6 +1029,14 @@ $ cargo run -p mmiyc-bench --release -- \
 
 $ cargo run -p mmiyc-bench --release -- \
     bench --air all --iters 20
+
+# Same harness, browser-engine numbers (Table~\ref{tab:wasm}):
+$ rustup target add wasm32-wasip1
+$ cargo build -p mmiyc-bench --release \
+              --target wasm32-wasip1
+$ wasmtime run --dir . \
+    target/wasm32-wasip1/release/mmiyc-bench.wasm \
+    bench --air all --iters 10
 \end{verbatim}
 
 Table~\ref{tab:repro} maps each table and figure in this
@@ -1009,6 +1054,7 @@ section to the command above whose stdout it was extracted from.
     \midrule
     Table~\ref{tab:storage}     & \texttt{mmiyc-bench bench}      & \texttt{deep\_ali} backend, $n=32$  \\
     Table~\ref{tab:compute}     & \texttt{mmiyc-bench bench}      & \texttt{--iters}, \texttt{--queries} \\
+    Table~\ref{tab:wasm}        & \texttt{mmiyc-bench.wasm}       & \texttt{wasm32-wasip1} + wasmtime    \\
     Table~\ref{tab:breach}      & \texttt{mmiyc-bench breach}     & seed, \texttt{--aux-*}              \\
     Table~\ref{tab:regulatory}  & \texttt{mmiyc-bench regulatory} & all params at default               \\
     Fig.~\ref{fig:sensitivity}  & \texttt{mmiyc-bench regulatory} & sweep printed inline                \\

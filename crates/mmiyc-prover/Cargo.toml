@@ -16,3 +16,8 @@ ark-goldilocks = { workspace = true }
 serde     = { workspace = true }
 thiserror = { workspace = true }
 anyhow    = { workspace = true }
+
+# WASM target: enable the `js` feature on getrandom so the
+# transitively-pulled `rand` works in the browser via WebCrypto.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
