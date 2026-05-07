@@ -33,3 +33,6 @@ thiserror  = { workspace = true }
 
 # Storage — PostgreSQL via sqlx, or SQLite for tests.
 sqlx = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

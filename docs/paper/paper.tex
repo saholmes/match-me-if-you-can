@@ -384,6 +384,84 @@ get distinct identifiers and the verifier cannot accidentally
 accept an age\nobreakdash-21 proof against an age\nobreakdash-18
 threshold.
 
+\paragraph{Trace structure.}
+Figure~\ref{fig:age-air-trace} sketches the AIR trace.  Both range
+checks are run in parallel across two 32\nobreakdash-row, 1\nobreakdash-column
+sub\nobreakdash-traces; per\nobreakdash-row Boolean constraints
+$b_i (1 - b_i) = 0$ pin every cell to $\{0, 1\}$, and two boundary
+constraints fix the bit\nobreakdash-decomposition sums to
+$\mathit{dob} - \mathit{dob}_\mathrm{min}$ and
+$\mathit{dob}_\mathrm{max} - \mathit{dob}$ respectively.  Both
+witness columns are committed; the verifier sees only the
+public bounds and the proof.
+
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}[
+  x=1.4cm, y=0.5cm,
+  hcell/.style={draw, minimum width=1.4cm, minimum height=0.5cm,
+                fill=gray!15, font=\small\itshape, inner sep=2pt},
+  lcell/.style={draw, minimum width=1.4cm, minimum height=0.5cm,
+                fill=blue!7,  font=\small, inner sep=2pt},
+  rcell/.style={draw, minimum width=1.4cm, minimum height=0.5cm,
+                fill=orange!10, font=\small, inner sep=2pt},
+  ann/.style={font=\footnotesize, color=gray!50!black},
+]
+  % Header row at y=0
+  \node[hcell] at (0,0) {row $i$};
+  \node[hcell] at (1,0) {$b^{\mathrm{lo}}_i$};
+  \node[hcell] at (2,0) {$b^{\mathrm{hi}}_i$};
+
+  % Three explicit rows (y = -1, -2, -3)
+  \node[hcell] at (0,-1) {$0$};
+  \node[lcell] at (1,-1) {$1$};
+  \node[rcell] at (2,-1) {$0$};
+
+  \node[hcell] at (0,-2) {$1$};
+  \node[lcell] at (1,-2) {$0$};
+  \node[rcell] at (2,-2) {$1$};
+
+  \node[hcell] at (0,-3) {$2$};
+  \node[lcell] at (1,-3) {$1$};
+  \node[rcell] at (2,-3) {$1$};
+
+  % Vertical dots at y = -4
+  \node[hcell] at (0,-4) {$\vdots$};
+  \node[lcell] at (1,-4) {$\vdots$};
+  \node[rcell] at (2,-4) {$\vdots$};
+
+  % Last row at y = -5
+  \node[hcell] at (0,-5) {$31$};
+  \node[lcell] at (1,-5) {$b^{\mathrm{lo}}_{31}$};
+  \node[rcell] at (2,-5) {$b^{\mathrm{hi}}_{31}$};
+
+  % Right-hand annotations
+  \node[ann, anchor=west, align=left] at (2.85, 0)
+    {Two parallel\\32\nobreakdash-row witness columns};
+  \node[ann, anchor=west, align=left] at (2.85, -2.5)
+    {per\nobreakdash-cell Boolean constraint:\\
+     $\quad b^{\mathrm{lo}}_i\,(1-b^{\mathrm{lo}}_i) = 0$\\
+     $\quad b^{\mathrm{hi}}_i\,(1-b^{\mathrm{hi}}_i) = 0$};
+  \node[ann, anchor=west, align=left] at (2.85, -5)
+    {boundary constraints:\\
+     $\quad \sum_i b^{\mathrm{lo}}_i\,2^i = \mathit{dob} - \mathit{dob}_\mathrm{min}$\\
+     $\quad \sum_i b^{\mathrm{hi}}_i\,2^i = \mathit{dob}_\mathrm{max} - \mathit{dob}$};
+\end{tikzpicture}
+\caption{Trace structure of the age\nobreakdash-range AIR.  Both
+sides of the inequality $\mathit{dob}_\mathrm{min} \leq \mathit{dob}
+\leq \mathit{dob}_\mathrm{max}$ are reduced to non\nobreakdash-negativity
+of a 32\nobreakdash-bit integer: two parallel bit\nobreakdash-decomposition
+columns ($b^{\mathrm{lo}}$, $b^{\mathrm{hi}}$) are pinned to $\{0,1\}$
+by per\nobreakdash-cell Boolean constraints, and two boundary
+constraints fix their weighted sums to $\mathit{dob}-\mathit{dob}_\mathrm{min}$
+and $\mathit{dob}_\mathrm{max}-\mathit{dob}$.  The country, postcode,
+e\nobreakdash-mail and income\nobreakdash-bracket AIRs use trace
+shapes of the same family (Merkle\nobreakdash-path columns for set
+membership; a single 64\nobreakdash-bit decomposition for the
+income range).}
+\label{fig:age-air-trace}
+\end{figure}
+
 \subsection{Country set membership}
 \label{sec:air-country}
 

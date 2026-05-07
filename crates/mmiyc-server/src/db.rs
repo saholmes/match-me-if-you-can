@@ -17,7 +17,10 @@ pub async fn open(database_url: &str) -> Result<SqlitePool> {
     Ok(pool)
 }
 
-async fn init_schemas(pool: &SqlitePool) -> Result<()> {
+/// Idempotently create the two storage scenario schemas on the
+/// supplied pool.  Public so integration tests can build a router
+/// against a custom pool (e.g. a per-test tempfile).
+pub async fn init_schemas(pool: &SqlitePool) -> Result<()> {
     // ------- PII schema -------
     sqlx::query(
         r"

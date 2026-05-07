@@ -1557,6 +1557,7 @@ dependencies = [
  "serde_json",
  "sha3",
  "sqlx",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tower",
