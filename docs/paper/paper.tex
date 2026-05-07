@@ -743,8 +743,8 @@ f \cdot \delta = 0$ by construction (there are no
 re\nobreakdash-identified records to fine).
 
 Table~\ref{tab:regulatory} reports the differential under default
-parameters and Table~\ref{tab:sensitivity} sweeps over breach
-probability.
+parameters and Figure~\ref{fig:sensitivity} sweeps over both
+the breach probability and the per\nobreakdash-record fine.
 
 \begin{table}[h]
   \centering
@@ -766,23 +766,89 @@ probability.
   \end{tabular}
 \end{table}
 
-\begin{table}[h]
-  \centering
-  \caption{Sensitivity to breach probability.  Annual savings scale
-    linearly in $p$.}
-  \label{tab:sensitivity}
-  \begin{tabular}{r r r r}
-    \toprule
-    \textbf{$p$ (per year)} & \textbf{Annual PII (\pounds)} & \textbf{Annual Proofs (\pounds)} & \textbf{Savings (\pounds)} \\
-    \midrule
-    $0.01$ &  $3{,}814$ & $0$ &  $3{,}814$ \\
-    $0.025$ &  $9{,}536$ & $0$ &  $9{,}536$ \\
-    $0.05$ & $19{,}071$ & $0$ & $19{,}071$ \\
-    $0.10$ & $38{,}142$ & $0$ & $38{,}142$ \\
-    $0.25$ & $95{,}355$ & $0$ & $95{,}355$ \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+\begin{figure}[h]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.46\linewidth, height=4.5cm,
+  xlabel={$p$ (breach probability per year)},
+  ylabel={Annual fine (\pounds)},
+  xmin=0, xmax=0.26, ymin=0, ymax=110000,
+  grid=both, grid style={gray!20},
+  scaled y ticks=false,
+  yticklabel style={/pgf/number format/.cd, fixed, 1000 sep={,}},
+  legend pos=north west, legend cell align=left,
+  legend style={font=\footnotesize, fill=white, fill opacity=0.9, draw opacity=0.4},
+  tick label style={font=\footnotesize},
+  label style={font=\footnotesize},
+  title style={font=\footnotesize, yshift=-1ex},
+  title={(a) annual fine vs breach probability},
+]
+% PII curve: from harness output at f = £130, N_re-id = 2934
+\addplot+[mark=*, mark size=1.6pt, color=red!70!black, line width=0.8pt]
+  coordinates {
+    (0.010,  3814.20)
+    (0.025,  9535.50)
+    (0.050, 19071.00)
+    (0.100, 38142.00)
+    (0.250, 95355.00)
+  };
+\addlegendentry{PII}
+% Proofs curve: zero everywhere
+\addplot+[mark=square*, mark size=1.5pt, color=teal!70!black, line width=0.8pt]
+  coordinates {(0.010, 0) (0.025, 0) (0.050, 0) (0.100, 0) (0.250, 0)};
+\addlegendentry{Proofs}
+% Default operating point
+\draw[dashed, gray] (axis cs:0.05, 0) -- (axis cs:0.05, 19071);
+\node[font=\scriptsize, color=gray!50!black, anchor=south west]
+  at (axis cs:0.055, 19071) {default $p\!=\!0.05$};
+\end{axis}
+\end{tikzpicture}\hfill
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.46\linewidth, height=4.5cm,
+  xlabel={$f$ (fine per re-identified record, \pounds)},
+  ylabel={Annual fine (\pounds)},
+  xmin=0, xmax=520, ymin=0, ymax=80000,
+  grid=both, grid style={gray!20},
+  scaled y ticks=false,
+  yticklabel style={/pgf/number format/.cd, fixed, 1000 sep={,}},
+  legend pos=north west, legend cell align=left,
+  legend style={font=\footnotesize, fill=white, fill opacity=0.9, draw opacity=0.4},
+  tick label style={font=\footnotesize},
+  label style={font=\footnotesize},
+  title style={font=\footnotesize, yshift=-1ex},
+  title={(b) annual fine vs per\nobreakdash-record cost},
+]
+\addplot+[mark=*, mark size=1.6pt, color=red!70!black, line width=0.8pt]
+  coordinates {
+    ( 50,  7335.00)
+    (100, 14670.00)
+    (130, 19071.00)
+    (200, 29340.00)
+    (500, 73350.00)
+  };
+\addlegendentry{PII}
+\addplot+[mark=square*, mark size=1.5pt, color=teal!70!black, line width=0.8pt]
+  coordinates {(50, 0) (100, 0) (130, 0) (200, 0) (500, 0)};
+\addlegendentry{Proofs}
+\draw[dashed, gray] (axis cs:130, 0) -- (axis cs:130, 19071);
+\node[font=\scriptsize, color=gray!50!black, anchor=south west]
+  at (axis cs:140, 19071) {default $f\!=\!\pounds 130$};
+\end{axis}
+\end{tikzpicture}
+\caption{Sensitivity of the expected\nobreakdash-annual\nobreakdash-fine
+  differential.  All numbers come from the bench harness on the
+  $\num{10000}$\nobreakdash-user UK population (Sweeney key,
+  $N_{\text{re-id}} = 2934$); proofs are flat at $\pounds 0$ by
+  construction.  (a) Sweeping $p \in [0.01, 0.25]$ at fixed
+  $f = \pounds 130$.  (b) Sweeping $f \in [\pounds 50, \pounds 500]$
+  at fixed $p = 0.05$.  In both subplots the PII line is linear
+  in the swept parameter and the proofs line stays at zero, so
+  the savings dominate at every operating point in the
+  defensible range of either parameter.}
+\label{fig:sensitivity}
+\end{figure}
 
 \paragraph{Trade-off vs storage premium.}  The proofs scenario's
 storage overhead from \S\ref{sec:eval-storage} is
