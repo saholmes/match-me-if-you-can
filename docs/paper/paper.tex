@@ -656,21 +656,21 @@ pricing of $\pounds 0.30$/GB/month.
 
 We drive the upstream \texttt{deep\_ali} prover directly from the
 bench harness (\texttt{mmiyc-bench bench}) and report the median
-of $20$ prove + verify cycles per row count.  Because
-\texttt{deep\_ali} dispatches over a closed \texttt{AirType}
-enum and our age / country AIRs do not yet have first\nobreakdash-class
-variants in that enum, we measure two existing AIRs that bracket
-the range\nobreakdash-check / Merkle\nobreakdash-path workloads in
-trace width and constraint count: Fibonacci ($w=2$, $k=1$,
-deg\nobreakdash-2) as a tight lower bound for the age\nobreakdash-range
-AIR ($w=2$ Boolean cols + $k=2$ deg\nobreakdash-2 transitions),
-and HashRollup ($w=4$, $k=3$, deg\nobreakdash-2) as the upper bound
-for the wider Merkle\nobreakdash-path AIRs (country, postcode,
-e\nobreakdash-mail; \S\ref{sec:airs}).  All numbers are from
-a single Apple\nobreakdash-Silicon (M\nobreakdash-series) laptop,
-\texttt{cargo --release}, no rayon
-parallelism — i.e.\ the configuration most representative of a
-WASM browser deployment.
+of $30$ prove + verify cycles per row count.  We added a
+first\nobreakdash-class \texttt{AgeRange32} variant to
+\texttt{deep\_ali::AirType} ($w=2$ Boolean columns + $k=2$
+per\nobreakdash-row degree\nobreakdash-2 constraints
+$b\,(1-b) = 0$), so the age\nobreakdash-range, income\nobreakdash-bracket
+and postcode\nobreakdash-prefix AIRs from \S\ref{sec:airs} are
+now measured exactly rather than estimated.  The wider
+Merkle\nobreakdash-path AIRs (country, e\nobreakdash-mail
+domain) do not yet have a first\nobreakdash-class variant; we
+report HashRollup ($w=4$, $k=3$, deg\nobreakdash-2) as a
+structural upper bound for them, and Fibonacci ($w=2$, $k=1$)
+as a lower\nobreakdash-bound reference.  All numbers are from a
+single Apple\nobreakdash-Silicon (M\nobreakdash-series) laptop,
+\texttt{cargo --release}, no rayon parallelism — i.e.\ the
+configuration most representative of a WASM browser deployment.
 
 Table~\ref{tab:compute} reports the measurement.  Three findings:
 
@@ -692,41 +692,50 @@ Table~\ref{tab:compute} reports the measurement.  Three findings:
 \begin{table}[h]
   \centering
   \caption{Real prove + verify timings against the
-    \texttt{deep\_ali} backend, median of $20$ runs.  Smaller
-    $n_\mathrm{trace}$ rows are the relevant regime for
-    registration AIRs; larger rows are reported to anchor the
-    extrapolation.  All on a single Apple\nobreakdash-Silicon
-    laptop, \texttt{cargo --release}, no parallelism.}
+    \texttt{deep\_ali} backend, median of $30$ runs.  AgeRange32
+    is the AIR backing the age / income / postcode\nobreakdash-prefix
+    predicates.  Fibonacci and HashRollup bracket it for context
+    and HashRollup also stands in for the wider Merkle\nobreakdash-path
+    AIRs (country, e\nobreakdash-mail) that do not yet have a
+    first\nobreakdash-class \texttt{AirType} variant.  All on a
+    single Apple\nobreakdash-Silicon laptop, \texttt{cargo --release},
+    no parallelism.}
   \label{tab:compute}
   \begin{tabular}{l r r r r r r}
     \toprule
     \textbf{AIR} & $n_\mathrm{trace}$ & $w$ & $k$ &
       \textbf{prove (ms)} & \textbf{verify (ms)} & \textbf{proof (KiB)} \\
     \midrule
-    Fibonacci  &   $32$ & $2$ & $1$ &  $6.95$ & $1.24$ & $264$ \\
-    Fibonacci  &   $64$ & $2$ & $1$ & $14.15$ & $1.34$ & $292$ \\
-    Fibonacci  &  $128$ & $2$ & $1$ & $28.84$ & $1.52$ & $322$ \\
-    Fibonacci  &  $256$ & $2$ & $1$ & $56.40$ & $1.69$ & $378$ \\
+    Fibonacci    &   $32$ & $2$ & $1$ &  $8.22$ & $1.32$ & $264$ \\
+    Fibonacci    &   $64$ & $2$ & $1$ & $17.37$ & $1.71$ & $292$ \\
+    Fibonacci    &  $128$ & $2$ & $1$ & $29.75$ & $1.52$ & $322$ \\
+    Fibonacci    &  $256$ & $2$ & $1$ & $55.53$ & $1.70$ & $378$ \\
     \midrule
-    HashRollup &   $32$ & $4$ & $3$ &  $7.38$ & $1.20$ & $264$ \\
-    HashRollup &   $64$ & $4$ & $3$ & $14.91$ & $1.37$ & $292$ \\
-    HashRollup &  $128$ & $4$ & $3$ & $30.73$ & $1.52$ & $322$ \\
-    HashRollup &  $256$ & $4$ & $3$ & $61.20$ & $1.75$ & $378$ \\
+    \textbf{AgeRange32} &   $32$ & $2$ & $2$ & $\mathbf{6.54}$ & $\mathbf{1.15}$ & $264$ \\
+    \textbf{AgeRange32} &   $64$ & $2$ & $2$ & $13.48$ & $1.29$ & $292$ \\
+    \textbf{AgeRange32} &  $128$ & $2$ & $2$ & $27.52$ & $1.47$ & $322$ \\
+    \textbf{AgeRange32} &  $256$ & $2$ & $2$ & $54.96$ & $1.65$ & $378$ \\
+    \midrule
+    HashRollup   &   $32$ & $4$ & $3$ &  $6.86$ & $1.12$ & $264$ \\
+    HashRollup   &   $64$ & $4$ & $3$ & $14.01$ & $1.32$ & $292$ \\
+    HashRollup   &  $128$ & $4$ & $3$ & $28.51$ & $1.47$ & $322$ \\
+    HashRollup   &  $256$ & $4$ & $3$ & $57.41$ & $1.62$ & $378$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 \paragraph{Implication for the registration AIRs.}  The
-age\nobreakdash-range AIR runs at $n_\mathrm{trace} = 32$ (one
-row per witness bit, two parallel columns) and the country
-Merkle\nobreakdash-path AIR runs at $n_\mathrm{trace} \leq 32$
-for $|S| \leq 256$ permitted countries.  Both sit within the
-$32$\nobreakdash-row regime of Table~\ref{tab:compute}.  Native
-prove\nobreakdash-time per attribute is therefore
-$\approx 7$\,ms; native verify\nobreakdash-time is
-$\approx 1.2$\,ms; per\nobreakdash-attribute proof bytes are
-$\num{270576}$ — already used in
-Table~\ref{tab:storage}.
+age\nobreakdash-range AIR is the AgeRange32 row of
+Table~\ref{tab:compute} directly.  The country Merkle\nobreakdash-path
+AIR runs at $n_\mathrm{trace} \leq 32$ for $|S| \leq 256$
+permitted countries; bracketed by Fibonacci and HashRollup it
+sits at $\approx\!\num{7}$\,ms native prove time.  Both
+attributes contribute the byte\nobreakdash-identical
+$\num{270576}$\nobreakdash-byte proof already used in
+Table~\ref{tab:storage}, since proof size is determined by the
+FRI\nobreakdash-query schedule and trace size, not constraint
+count or trace width (rows for $w=2$/$k=1$/$k=2$/$k=3$ all
+agree to the byte).
 
 \paragraph{WASM feasibility (measured on two engines).}  We
 compile the same bench harness to \texttt{wasm32-wasip1} and
@@ -765,15 +774,20 @@ byte\nobreakdash-identical across native, wasmtime, and V8
     \cmidrule(lr){3-5} \cmidrule(lr){6-8}
                  &       & native & wasmtime & V8 & native & wasmtime & V8 \\
     \midrule
-    Fibonacci  &  $32$ &  $6.95$ &  $19.42$ &  $17.45$ & $1.24$ & $2.45$ & $1.94$ \\
-    Fibonacci  &  $64$ & $14.15$ &  $39.62$ &  $35.68$ & $1.34$ & $2.71$ & $2.18$ \\
-    Fibonacci  & $128$ & $28.84$ &  $78.77$ &  $70.46$ & $1.52$ & $3.04$ & $2.43$ \\
-    Fibonacci  & $256$ & $56.40$ & $155.56$ & $139.46$ & $1.69$ & $3.39$ & $2.65$ \\
+    Fibonacci  &  $32$ &  $8.22$ &  $19.56$ &  $17.31$ & $1.32$ & $2.51$ & $1.94$ \\
+    Fibonacci  &  $64$ & $17.37$ &  $38.87$ &  $34.89$ & $1.71$ & $2.78$ & $2.17$ \\
+    Fibonacci  & $128$ & $29.75$ &  $78.04$ &  $70.27$ & $1.52$ & $3.12$ & $2.38$ \\
+    Fibonacci  & $256$ & $55.53$ & $157.28$ & $141.86$ & $1.70$ & $3.46$ & $2.66$ \\
     \midrule
-    HashRollup &  $32$ &  $7.38$ &  $19.39$ &  $17.98$ & $1.20$ & $2.42$ & $1.91$ \\
-    HashRollup &  $64$ & $14.91$ &  $39.09$ &  $35.96$ & $1.37$ & $2.69$ & $2.19$ \\
-    HashRollup & $128$ & $30.73$ &  $78.85$ &  $72.08$ & $1.52$ & $3.03$ & $2.40$ \\
-    HashRollup & $256$ & $61.20$ & $158.54$ & $145.10$ & $1.75$ & $3.39$ & $2.69$ \\
+    \textbf{AgeRange32} &  $32$ & $\mathbf{6.54}$ & $\mathbf{19.29}$ & $\mathbf{17.66}$ & $\mathbf{1.15}$ & $\mathbf{2.56}$ & $\mathbf{1.95}$ \\
+    \textbf{AgeRange32} &  $64$ & $13.48$ &  $38.83$ &  $35.24$ & $1.29$ & $2.80$ & $2.18$ \\
+    \textbf{AgeRange32} & $128$ & $27.52$ &  $78.10$ &  $71.29$ & $1.47$ & $3.10$ & $2.48$ \\
+    \textbf{AgeRange32} & $256$ & $54.96$ & $158.21$ & $143.30$ & $1.65$ & $3.61$ & $2.70$ \\
+    \midrule
+    HashRollup &  $32$ &  $6.86$ &  $19.55$ &  $17.89$ & $1.12$ & $2.47$ & $1.94$ \\
+    HashRollup &  $64$ & $14.01$ &  $39.50$ &  $36.08$ & $1.32$ & $2.77$ & $2.19$ \\
+    HashRollup & $128$ & $28.51$ &  $79.42$ &  $72.73$ & $1.47$ & $3.12$ & $2.45$ \\
+    HashRollup & $256$ & $57.41$ & $159.87$ & $147.05$ & $1.62$ & $3.43$ & $2.72$ \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1121,22 +1135,24 @@ configuration.  The client\nobreakdash-WASM prover removes this
 exposure window entirely, at the cost of higher engineering effort
 on the browser side.
 
-\paragraph{Outstanding work on the AIR set.}  We measure
-prove + verify against the upstream
-\texttt{deep\_ali}~\cite{stark-stir} backend directly via the
-bench harness in \S\ref{sec:eval-compute}.  The prover currently
-dispatches over a closed \texttt{AirType} enum and we benchmark
-the two existing variants that bracket the registration AIRs in
-trace width and constraint count (Fibonacci and HashRollup).
-Adding first\nobreakdash-class \texttt{AgeRange} and
-\texttt{MerklePath} variants to that enum is a focused
-follow\nobreakdash-up: the Boolean and boundary constraints are a
-small fraction of an existing AIR's polynomial machinery, and the
-proof\nobreakdash-byte count is FRI\nobreakdash-query\nobreakdash-dominated
-(\S\ref{sec:eval-compute} confirms identical proof sizes for
-$k = 1$ and $k = 3$ at the same $n_\mathrm{trace}$), so the
-storage and compute numbers will move within the bracket of
-Table~\ref{tab:compute} rather than shift qualitatively.
+\paragraph{Outstanding work on the AIR set.}  We added a
+first\nobreakdash-class \texttt{AgeRange32} variant to
+\texttt{deep\_ali::AirType} for this paper, so the
+age\nobreakdash-range / income\nobreakdash-bracket /
+postcode\nobreakdash-prefix predicates are measured exactly in
+Table~\ref{tab:compute} rather than via a structural proxy.
+The wider Merkle\nobreakdash-path AIRs (country, e\nobreakdash-mail
+domain) do not yet have a corresponding variant; we report
+HashRollup as a structural upper bound for them.  Adding a
+first\nobreakdash-class \texttt{MerklePath} variant is a focused
+follow\nobreakdash-up — the constraint set is the standard
+$\mathrm{node}_{i+1} = H(\mathit{lhs}_i \,\Vert\, \mathit{rhs}_i)$
+transition over four trace columns and a Merkle\nobreakdash-root
+boundary check — and we expect its prove time and proof bytes
+to land within the bracket of Table~\ref{tab:compute} rather
+than shift qualitatively, since proof size is FRI\nobreakdash-query\nobreakdash-dominated
+(the table confirms identical proof sizes for $k \in \{1, 2, 3\}$
+at the same $n_\mathrm{trace}$).
 
 \paragraph{Real per\nobreakdash-record fine.}  The
 $\pounds 130$\nobreakdash-per\nobreakdash-record default is the global

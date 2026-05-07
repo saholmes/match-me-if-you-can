@@ -155,7 +155,7 @@ enum Cmd {
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-enum AirArg { Fibonacci, HashRollup, All }
+enum AirArg { Fibonacci, AgeRange, HashRollup, All }
 
 fn main() -> Result<()> {
     let args = Cli::parse();
@@ -308,9 +308,11 @@ fn run_bench(air: AirArg, log_rows: &[u32], iters: usize, queries: usize) -> Res
 
     let airs: Vec<(&str, AirType)> = match air {
         AirArg::Fibonacci  => vec![("Fibonacci",  AirType::Fibonacci)],
+        AirArg::AgeRange   => vec![("AgeRange32", AirType::AgeRange32)],
         AirArg::HashRollup => vec![("HashRollup", AirType::HashRollup)],
         AirArg::All        => vec![
             ("Fibonacci",  AirType::Fibonacci),
+            ("AgeRange32", AirType::AgeRange32),
             ("HashRollup", AirType::HashRollup),
         ],
     };
@@ -333,10 +335,11 @@ fn run_bench(air: AirArg, log_rows: &[u32], iters: usize, queries: usize) -> Res
         }
     }
     println!();
-    println!("Note: the Fibonacci AIR (w=2, k=1) is a tight lower-bound proxy");
-    println!("for an age-range AIR (w=2 boolean cols + 2 deg-2 transitions);");
-    println!("HashRollup (w=4, k=3) is the upper bound.  The real range AIR");
-    println!("would land between these two rows at the same n_trace.");
+    println!("AgeRange32 is the first-class deep_ali::AirType variant backing");
+    println!("the age-range / income-bracket / postcode-prefix predicates in");
+    println!("the paper (w=2 Boolean cols + 2 deg-2 transitions); Fibonacci");
+    println!("(k=1) and HashRollup (k=3) bracket it for context, and HashRollup");
+    println!("is also the structural proxy for the wider Merkle-path AIRs.");
     Ok(())
 }
 
