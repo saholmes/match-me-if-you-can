@@ -601,20 +601,25 @@ script that drives the workspace end\nobreakdash-to\nobreakdash-end:
 }
 
 \noindent
-\textbf{What is real and what is placeholder.}  The
-application\nobreakdash-layer predicate enforcement (range membership,
-set membership, normalisation, leaf hashing) is real and is
-exercised by 24 unit tests.  At the time of writing, the
-\texttt{deep\_ali} \texttt{prove}/\texttt{verify} call is replaced
-by a placeholder that emits a domain\nobreakdash-separated marker
-byte string of the expected size; the integration with the upstream
-STARK\nobreakdash-STIR prover is a focused engineering follow\nobreakdash-up
-that does not affect any of the storage, breach, or regulatory
-numbers reported below — those depend only on the
-\emph{persisted bytes per record} and the
-\emph{quasi\nobreakdash-identifiers absent from the database}, not
-on whether the bytes are a real proof or a placeholder of the
-right shape.
+\textbf{What is real and what is still stub.}  The
+application\nobreakdash-layer predicate enforcement (range
+membership, set membership, normalisation, leaf hashing) is real
+and is exercised by 36 workspace tests including end\nobreakdash-to\nobreakdash-end
+integration tests against an axum\,+\,SQLite server.  The
+age\nobreakdash-range AIR is wired through to the upstream
+\texttt{deep\_ali} backend (\texttt{AirType::AgeRange32}); the
+server's \texttt{POST /register} endpoint emits a real
+$\num{405524}$\nobreakdash-byte STARK proof which
+\texttt{GET /verify/age/\textit{id}} subsequently verifies under
+the canonical\nobreakdash-serialize wire format.  The country /
+e\nobreakdash-mail dual\nobreakdash-hash AIR remains at the
+application\nobreakdash-layer membership check pending the
+first\nobreakdash-class \texttt{MerklePath} and \texttt{Sha3}
+\texttt{AirType} variants discussed in
+\S\ref{sec:eval-compute}\,/\,\S\ref{sec:discussion} — the bench
+harness measures the prove + verify cost of that combination
+exactly via the existing \texttt{PoseidonChain} and
+\texttt{Sha256DsKsk} reference AIRs (Tables~\ref{tab:compute}\,/\,\ref{tab:wasm}).
 
 \section{Evaluation}
 \label{sec:eval}
@@ -636,16 +641,18 @@ under each scenario.  PII storage is computed from the canonical
 CSV byte length per record (\texttt{user\_id}, \texttt{dob\_days},
 \texttt{country\_code}, \texttt{postcode\_prefix},
 \texttt{email\_domain}, \texttt{income\_pence}, \texttt{sex}).
-Proof storage is the \emph{measured} size of a single FRI proof
-emitted by the upstream \texttt{deep\_ali}~\cite{stark-stir}
+Proof storage is the \emph{measured serialized} size of a FRI
+proof emitted by the upstream \texttt{deep\_ali}~\cite{stark-stir}
 backend at $128$\nobreakdash-bit security
 ($1/\rho_0 = 32$ blowup, sextic extension over Goldilocks,
-$54$ queries, arity\nobreakdash-2 binary FRI), at the smallest
-trace size compatible with our AIRs ($n_\mathrm{trace} = 32$
-rows): \num{270576} bytes per attribute.  Two attributes are
-proven per user (age + country) plus a fixed
-$80$\nobreakdash-byte metadata overhead (commitment + policy ID +
-user ID reference).
+$54$ queries, arity\nobreakdash-2 binary FRI; canonical
+ark\nobreakdash-serialize Compress=Yes encoding).  The age proof
+runs at $n_\mathrm{trace} = 32$ ($\num{405524}$ bytes); the
+country proof, structurally a depth\nobreakdash-$5$ Poseidon Merkle
+path (\S\ref{sec:air-country}), runs at $n_\mathrm{trace} = 512$
+($\num{614964}$ bytes).  Two attributes are proven per user (age
++ country) plus a fixed $80$\nobreakdash-byte metadata overhead
+(commitment + policy ID + user ID reference).
 
 The proof\nobreakdash-byte number is FRI\nobreakdash-query
 dominated: the linear combination of $54$ queries against an
@@ -660,27 +667,27 @@ proof sizes for AIRs with $k = 1$ (Fibonacci) and $k = 3$
   \centering
   \caption{Per\nobreakdash-user storage cost on a
     \num{10000}\nobreakdash-user UK population with two proven
-    attributes, using measured proof bytes from the bench in
-    \S\ref{sec:eval-compute}.}
+    attributes (age + country), using measured serialized proof
+    bytes from the bench in \S\ref{sec:eval-compute}.}
   \label{tab:storage}
   \begin{tabular}{l r r r}
     \toprule
     \textbf{Scenario} & \textbf{Total bytes} & \textbf{Bytes / user} & \textbf{vs. PII} \\
     \midrule
-    PII   &      \num{595004}    &       \num{59.5}  & $1.0\times$ \\
-    Proofs & \num{5412320000} & \num{541232}     & $\mathbf{9\,100\times}$ \\
+    PII   &      \num{595004}     &       \num{59.5}    & $1.0\times$ \\
+    Proofs & \num{10205680000} & \num{1020568}      & $\mathbf{17\,150\times}$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 At commodity cloud SSD prices ($\sim\!\pounds 0.05$/GB/month) the
 absolute cost is
-$5.41 \times 10^{-4}$ GB / user $\times \pounds 0.05$/mo
-$\times 12$ mo $\approx \pounds 3.25$ per $\num{10000}$\nobreakdash-user
+$1.02 \times 10^{-3}$ GB / user $\times \pounds 0.05$/mo
+$\times 12$ mo $\approx \pounds 6.12$ per $\num{10000}$\nobreakdash-user
 deployment per year — three orders of magnitude below the
 $\pounds\num{19071}$\nobreakdash-per\nobreakdash-year fine
 reduction analysed in \S\ref{sec:eval-regulatory}, and still
-below by an order of magnitude even at premium managed\nobreakdash-DB
+two orders of magnitude below at premium managed\nobreakdash-DB
 pricing of $\pounds 0.30$/GB/month.
 
 \subsection{Compute cost}
@@ -738,28 +745,28 @@ Table~\ref{tab:compute} reports the measurement.  Three findings:
     \textbf{AIR} & $n_\mathrm{trace}$ & $w$ & $k$ &
       \textbf{prove (ms)} & \textbf{verify (ms)} & \textbf{proof (KiB)} \\
     \midrule
-    Fibonacci    &   $32$ & $2$ & $1$ &   $6.86$ & $1.08$ & $264$ \\
-    Fibonacci    &  $128$ & $2$ & $1$ &  $28.29$ & $1.53$ & $322$ \\
-    Fibonacci    &  $256$ & $2$ & $1$ &  $56.74$ & $1.67$ & $378$ \\
-    Fibonacci    &  $512$ & $2$ & $1$ & $113.75$ & $1.84$ & $411$ \\
+    Fibonacci    &   $32$ & $2$ & $1$ &   $7.67$ & $1.21$ & $396$ \\
+    Fibonacci    &  $128$ & $2$ & $1$ &  $31.75$ & $1.52$ & $468$ \\
+    Fibonacci    &  $256$ & $2$ & $1$ &  $57.58$ & $1.68$ & $559$ \\
+    Fibonacci    &  $512$ & $2$ & $1$ & $115.25$ & $1.84$ & $600$ \\
     \midrule
-    \textbf{AgeRange32} &   $32$ & $2$ & $2$ & $\mathbf{6.70}$ & $\mathbf{1.14}$ & $264$ \\
-    \textbf{AgeRange32} &  $128$ & $2$ & $2$ &  $28.01$ & $1.46$ & $322$ \\
-    \textbf{AgeRange32} &  $256$ & $2$ & $2$ &  $56.00$ & $1.66$ & $378$ \\
-    \textbf{AgeRange32} &  $512$ & $2$ & $2$ & $112.98$ & $1.83$ & $411$ \\
+    \textbf{AgeRange32} &   $32$ & $2$ & $2$ & $\mathbf{6.84}$ & $\mathbf{1.19}$ & $\mathbf{396}$ \\
+    \textbf{AgeRange32} &  $128$ & $2$ & $2$ &  $28.41$ & $1.46$ & $468$ \\
+    \textbf{AgeRange32} &  $256$ & $2$ & $2$ &  $56.82$ & $1.69$ & $559$ \\
+    \textbf{AgeRange32} &  $512$ & $2$ & $2$ & $114.52$ & $1.85$ & $600$ \\
     \midrule
-    HashRollup   &   $32$ & $4$ & $3$ &   $7.10$ & $1.16$ & $264$ \\
-    HashRollup   &  $128$ & $4$ & $3$ &  $29.62$ & $1.47$ & $322$ \\
-    HashRollup   &  $256$ & $4$ & $3$ &  $60.19$ & $1.68$ & $378$ \\
-    HashRollup   &  $512$ & $4$ & $3$ & $121.21$ & $1.85$ & $411$ \\
+    HashRollup   &   $32$ & $4$ & $3$ &   $7.08$ & $1.15$ & $396$ \\
+    HashRollup   &  $128$ & $4$ & $3$ &  $30.35$ & $1.51$ & $468$ \\
+    HashRollup   &  $256$ & $4$ & $3$ &  $61.00$ & $1.70$ & $559$ \\
+    HashRollup   &  $512$ & $4$ & $3$ & $123.24$ & $1.87$ & $600$ \\
     \midrule
-    \textbf{PoseidonChain} &   $32$ & $16$ & $16$ &  $\phantom{0}10.03$ & $1.21$ & $264$ \\
-    \textbf{PoseidonChain} &  $256$ & $16$ & $16$ &  $\phantom{0}83.27$ & $1.68$ & $378$ \\
-    \textbf{PoseidonChain} &  $512$ & $16$ & $16$ &           $169.43$ & $1.85$ & $411$ \\
+    \textbf{PoseidonChain} &   $32$ & $16$ & $16$ &  $\phantom{0}10.11$ & $1.16$ & $396$ \\
+    \textbf{PoseidonChain} &  $256$ & $16$ & $16$ &  $\phantom{0}84.46$ & $1.66$ & $559$ \\
+    \textbf{PoseidonChain} &  $512$ & $16$ & $16$ &           $\mathbf{171.35}$ & $\mathbf{1.90}$ & $\mathbf{600}$ \\
     \midrule
-    \textbf{Sha256DsKsk} &  $128$ & $756$ & $766$ &  $251.13$ & $1.56$ & $322$ \\
-    \textbf{Sha256DsKsk} &  $256$ & $756$ & $766$ &  $566.40$ & $1.72$ & $378$ \\
-    \textbf{Sha256DsKsk} &  $512$ & $756$ & $766$ & $1181.21$ & $1.86$ & $411$ \\
+    \textbf{Sha256DsKsk} &  $128$ & $756$ & $766$ &  $\mathbf{233.92}$ & $\mathbf{1.48}$ & $\mathbf{468}$ \\
+    \textbf{Sha256DsKsk} &  $256$ & $756$ & $766$ &  $577.36$ & $1.67$ & $559$ \\
+    \textbf{Sha256DsKsk} &  $512$ & $756$ & $766$ & $1097.57$ & $1.88$ & $600$ \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -777,16 +784,16 @@ proxy for SHA3\nobreakdash-256\,—\,both are
 Merkle\nobreakdash-Damg\aa{}rd / sponge constructions of comparable
 in\nobreakdash-circuit cost).  Total country\nobreakdash-AIR
 prove time at depth\nobreakdash-$5$ (EU\nobreakdash-27)
-is $\sim\!\num{169}$\,ms (PoseidonChain at $n=512$) plus
-$\sim\!\num{251}$\,ms (one SHA3 transition at $n=128$) $=
-\sim\!\num{420}$\,ms native.  At
-$\num{541232}$\nobreakdash-byte (\num{264}\,KiB) per
-range\nobreakdash-check proof and $\num{421232}$\nobreakdash-byte
-($\num{411}$\,KiB) per dual\nobreakdash-hash country proof, the
-proof\nobreakdash-bundle for a deployment that proves age +
-country is $\num{264} + \num{411} = \num{675}$\,KiB.  The two
-proofs are independent and can be produced in parallel where
-the prover has multiple cores.
+is $\sim\!\num{171}$\,ms (PoseidonChain at $n=512$) plus
+$\sim\!\num{234}$\,ms (one SHA3 transition at $n=128$) $=
+\sim\!\num{405}$\,ms native.  At
+$\num{405524}$\nobreakdash-byte (\num{396}\,KiB) per
+range\nobreakdash-check proof and $\num{614964}$\nobreakdash-byte
+($\num{600}$\,KiB) per Poseidon Merkle\nobreakdash-path
+country proof, the proof\nobreakdash-bundle for a deployment that
+proves age + country is $\num{396} + \num{600} =
+\num{996}$\,KiB.  The two proofs are independent and can be
+produced in parallel where the prover has multiple cores.
 
 \paragraph{WASM feasibility (measured on two engines).}  We
 compile the same bench harness to \texttt{wasm32-wasip1} and
@@ -825,28 +832,28 @@ byte\nobreakdash-identical across native, wasmtime, and V8
     \cmidrule(lr){3-5} \cmidrule(lr){6-8}
                  &       & native & wasmtime & V8 & native & wasmtime & V8 \\
     \midrule
-    Fibonacci  &  $32$ &   $6.86$ &  $19.56$ &  $17.71$ & $1.08$ & $2.51$ & $1.95$ \\
-    Fibonacci  & $128$ &  $28.29$ &  $78.04$ &  $72.19$ & $1.53$ & $3.12$ & $2.39$ \\
-    Fibonacci  & $256$ &  $56.74$ & $157.28$ & $145.13$ & $1.67$ & $3.46$ & $2.67$ \\
-    Fibonacci  & $512$ & $113.75$ & $315.00$ & $292.88$ & $1.84$ & $3.90$ & $2.94$ \\
+    Fibonacci  &  $32$ &   $7.67$ &  $19.56$ &  $18.68$ & $1.21$ & $2.51$ & $2.02$ \\
+    Fibonacci  & $128$ &  $31.75$ &  $78.04$ &  $73.50$ & $1.52$ & $3.12$ & $2.43$ \\
+    Fibonacci  & $256$ &  $57.58$ & $157.28$ & $146.23$ & $1.68$ & $3.46$ & $2.69$ \\
+    Fibonacci  & $512$ & $115.25$ & $315.00$ & $294.96$ & $1.84$ & $3.90$ & $2.97$ \\
     \midrule
-    \textbf{AgeRange32} &  $32$ & $\mathbf{6.70}$ & $\mathbf{19.29}$ & $\mathbf{17.94}$ & $\mathbf{1.14}$ & $\mathbf{2.56}$ & $\mathbf{1.94}$ \\
-    \textbf{AgeRange32} & $128$ &  $28.01$ &  $78.10$ &  $72.84$ & $1.46$ & $3.10$ & $2.44$ \\
-    \textbf{AgeRange32} & $256$ &  $56.00$ & $158.21$ & $147.23$ & $1.66$ & $3.61$ & $2.71$ \\
-    \textbf{AgeRange32} & $512$ & $112.98$ & $316.00$ & $295.85$ & $1.83$ & $3.92$ & $3.01$ \\
+    \textbf{AgeRange32} &  $32$ & $\mathbf{6.84}$ & $\mathbf{19.29}$ & $\mathbf{18.07}$ & $\mathbf{1.19}$ & $\mathbf{2.56}$ & $\mathbf{1.94}$ \\
+    \textbf{AgeRange32} & $128$ &  $28.41$ &  $78.10$ &  $73.74$ & $1.46$ & $3.10$ & $2.50$ \\
+    \textbf{AgeRange32} & $256$ &  $56.82$ & $158.21$ & $148.36$ & $1.69$ & $3.61$ & $2.72$ \\
+    \textbf{AgeRange32} & $512$ & $114.52$ & $316.00$ & $296.43$ & $1.85$ & $3.92$ & $3.00$ \\
     \midrule
-    HashRollup &  $32$ &   $7.10$ &  $19.55$ &  $18.59$ & $1.16$ & $2.47$ & $1.97$ \\
-    HashRollup & $128$ &  $29.62$ &  $79.42$ &  $76.21$ & $1.47$ & $3.12$ & $2.49$ \\
-    HashRollup & $256$ &  $60.19$ & $159.87$ & $154.09$ & $1.68$ & $3.43$ & $2.74$ \\
-    HashRollup & $512$ & $121.21$ & $320.00$ & $312.11$ & $1.85$ & $3.95$ & $3.10$ \\
+    HashRollup &  $32$ &   $7.08$ &  $19.55$ &  $18.68$ & $1.15$ & $2.47$ & $1.96$ \\
+    HashRollup & $128$ &  $30.35$ &  $79.42$ &  $76.50$ & $1.51$ & $3.12$ & $2.47$ \\
+    HashRollup & $256$ &  $61.00$ & $159.87$ & $154.81$ & $1.70$ & $3.43$ & $2.75$ \\
+    HashRollup & $512$ & $123.24$ & $320.00$ & $312.86$ & $1.87$ & $3.95$ & $3.01$ \\
     \midrule
-    \textbf{PoseidonChain} &  $32$ &  $10.03$ &  $26.49$ &  $26.02$ & $1.21$ & $2.53$ & $1.98$ \\
-    \textbf{PoseidonChain} & $256$ &  $83.27$ & $217.33$ & $217.40$ & $1.68$ & $3.46$ & $2.75$ \\
-    \textbf{PoseidonChain} & $512$ & $\mathbf{169.43}$ & $\mathbf{441.67}$ & $\mathbf{439.89}$ & $\mathbf{1.85}$ & $\mathbf{3.94}$ & $\mathbf{3.02}$ \\
+    \textbf{PoseidonChain} &  $32$ &  $10.11$ &  $26.49$ &  $26.31$ & $1.16$ & $2.53$ & $1.99$ \\
+    \textbf{PoseidonChain} & $256$ &  $84.46$ & $217.33$ & $216.33$ & $1.66$ & $3.46$ & $2.76$ \\
+    \textbf{PoseidonChain} & $512$ & $\mathbf{171.35}$ & $\mathbf{441.67}$ & $\mathbf{439.47}$ & $\mathbf{1.90}$ & $\mathbf{3.94}$ & $\mathbf{3.07}$ \\
     \midrule
-    \textbf{Sha256DsKsk} & $128$ & $\mathbf{251.13}$ & $\mathbf{702.26}$ & $\mathbf{683.01}$ & $\mathbf{1.56}$ & $\mathbf{3.14}$ & $\mathbf{2.48}$ \\
-    \textbf{Sha256DsKsk} & $256$ & $566.40$ & $1476.35$ & $1461.52$ & $1.72$ & $3.51$ & $2.85$ \\
-    \textbf{Sha256DsKsk} & $512$ & $1181.21$ & $3139.94$ & $3140.00$ & $1.86$ & $3.86$ & $3.10$ \\
+    \textbf{Sha256DsKsk} & $128$ & $\mathbf{233.92}$ & $\mathbf{702.26}$ & $\mathbf{678.55}$ & $\mathbf{1.48}$ & $\mathbf{3.14}$ & $\mathbf{2.47}$ \\
+    \textbf{Sha256DsKsk} & $256$ & $577.36$ & $1476.35$ & $1455.35$ & $1.67$ & $3.51$ & $2.85$ \\
+    \textbf{Sha256DsKsk} & $512$ & $1097.57$ & $3139.94$ & $3140.00$ & $1.88$ & $3.86$ & $3.10$ \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -860,12 +867,13 @@ proof's two contributions are PoseidonChain at $n=512$
 ($\sim\!\num{440}$\,ms) and one Sha256DsKsk transition at
 $n=128$ ($\sim\!\num{683}$\,ms), giving total
 client\nobreakdash-side prove time
-$\sim\!\num{18} + \num{440} + \num{683} = \num{1141}$\,ms.  The
-$\num{675}$\,KiB combined proof\nobreakdash-bundle upload
-takes $\sim\!\num{540}$\,ms over a $4$G connection
-($\sim\!10$\,Mbps up); native server verify is $\sim\!\num{5}$\,ms.
+$\sim\!\num{18} + \num{439} + \num{679} = \num{1136}$\,ms.  The
+combined age + country + SHA3\nobreakdash-binding proof bundle is
+$\num{396} + \num{600} + \num{468} = \num{1464}$\,KiB and takes
+$\sim\!\num{1170}$\,ms to upload over a $4$G connection
+($\sim\!10$\,Mbps up); native server verify is $\sim\!\num{6}$\,ms.
 Total client\nobreakdash-prover wall\nobreakdash-clock:
-$\sim\!\num{1.7}$\,s.
+$\sim\!\num{2.3}$\,s.
 
 This crosses the one\nobreakdash-second perceptual threshold and
 makes a pure client\nobreakdash-side prover deployment of the
@@ -887,22 +895,21 @@ practical configuration is a hybrid:
 \begin{itemize}
   \item \textbf{Client\nobreakdash-side prover} for the
         bit\nobreakdash-decomposition predicates (age, postcode,
-        income).  V8 prove time
-        $\sim\!\num{18}$\,ms\,/\,attribute,
-        proof upload $\num{264}$\,KiB\,/\,attribute, total
-        $\sim\!\num{18} + \num{200}$\,ms over
+        income).  V8 prove time $\sim\!\num{18}$\,ms\,/\,attribute,
+        proof upload $\num{396}$\,KiB\,/\,attribute, total
+        $\sim\!\num{18} + \num{317} = \num{335}$\,ms over
         4G — under the perceptual threshold.
   \item \textbf{Server\nobreakdash-side prover} for the
         FIPS\nobreakdash-compliant set\nobreakdash-membership
         predicates (country, e\nobreakdash-mail).  Native
-        prove time $\sim\!\num{420}$\,ms per attribute (the
-        Poseidon $\num{169}$\,ms\,$+$\,SHA3 $\num{251}$\,ms split
+        prove time $\sim\!\num{405}$\,ms per attribute (the
+        Poseidon $\num{171}$\,ms\,$+$\,SHA3 $\num{234}$\,ms split
         of \S\ref{sec:air-country}); the client uploads only
         the raw attribute, the server stores only the resulting
         proof bytes plus the policy JSON.  At
-        $\num{420}$\,ms\,/\,proof on a single core, a $\num{16}$\nobreakdash-core
+        $\num{405}$\,ms\,/\,proof on a single core, a $\num{16}$\nobreakdash-core
         server fleet sustains
-        $\sim\!\num{2300}$\nobreakdash-registrations\nobreakdash-per\nobreakdash-minute
+        $\sim\!\num{2370}$\nobreakdash-registrations\nobreakdash-per\nobreakdash-minute
         steady\nobreakdash-state.
 \end{itemize}
 
@@ -1142,7 +1149,7 @@ $ cargo run -p mmiyc-bench --release -- \
 
 $ cargo run -p mmiyc-bench --release -- \
     storage --input data/synthetic-users.csv \
-            --proof-bytes 270576 --attributes 2
+            --proof-bytes 405524 --attributes 2
 
 $ cargo run -p mmiyc-bench --release -- \
     breach --input data/synthetic-users.csv \

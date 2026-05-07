@@ -27,3 +27,4 @@ hex         = { workspace = true }
 deep_ali       = { workspace = true }
 ark-goldilocks = { workspace = true }
 ark-ff         = { workspace = true }
+ark-serialize  = { workspace = true }

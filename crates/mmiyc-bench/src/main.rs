@@ -218,11 +218,12 @@ mod stark_bench {
     use std::time::Instant;
 
     use ark_goldilocks::Goldilocks as F;
+    use ark_serialize::{CanonicalSerialize, Compress};
     use deep_ali::{
         air_workloads::{build_execution_trace, AirType},
         deep_ali_merge_general,
         fri::{
-            deep_fri_proof_size_bytes, deep_fri_prove, deep_fri_verify,
+            deep_fri_prove, deep_fri_verify,
             DeepFriParams, FriDomain,
         },
         sextic_ext::SexticExt,
@@ -289,7 +290,15 @@ mod stark_bench {
         let verify_ms = t_verify.elapsed().as_secs_f64() * 1e3;
         assert!(ok, "verify failed at n_trace = {n_trace}");
 
-        let proof_bytes = deep_fri_proof_size_bytes::<Ext>(&proof, false);
+        // Serialize the proof to get the actual on-disk size — this
+        // is what gets stored / shipped over the wire.  The
+        // alternative `deep_fri_proof_size_bytes` is an in-memory
+        // estimate that under-counts the canonical-serialize format
+        // by ~50%.
+        let mut blob = Vec::new();
+        proof.serialize_with_mode(&mut blob, Compress::Yes)
+            .expect("proof serialize must not fail");
+        let proof_bytes = blob.len();
         Sample { setup_ms, prove_ms, verify_ms, proof_bytes }
     }
 

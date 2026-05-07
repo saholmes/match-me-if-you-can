@@ -13,9 +13,11 @@ deep_ali       = { workspace = true }
 ark-ff         = { workspace = true }
 ark-goldilocks = { workspace = true }
 
-serde     = { workspace = true }
-thiserror = { workspace = true }
-anyhow    = { workspace = true }
+serde         = { workspace = true }
+thiserror     = { workspace = true }
+anyhow        = { workspace = true }
+ark-serialize = { workspace = true }
+sha3          = { workspace = true }
 
 # WASM target: enable the `js` feature on getrandom so the
 # transitively-pulled `rand` works in the browser via WebCrypto.

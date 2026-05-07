@@ -1526,6 +1526,7 @@ dependencies = [
  "anyhow",
  "ark-ff 0.4.2",
  "ark-goldilocks",
+ "ark-serialize 0.4.2",
  "clap",
  "deep_ali",
  "hex",
@@ -1560,10 +1561,12 @@ dependencies = [
  "anyhow",
  "ark-ff 0.4.2",
  "ark-goldilocks",
+ "ark-serialize 0.4.2",
  "deep_ali",
  "getrandom 0.2.17",
  "mmiyc-air",
  "serde",
+ "sha3",
  "thiserror 1.0.69",
 ]
 
@@ -1597,9 +1600,12 @@ dependencies = [
  "anyhow",
  "ark-ff 0.4.2",
  "ark-goldilocks",
+ "ark-serialize 0.4.2",
  "deep_ali",
  "mmiyc-air",
+ "mmiyc-prover",
  "serde",
+ "sha3",
  "thiserror 1.0.69",
 ]
 

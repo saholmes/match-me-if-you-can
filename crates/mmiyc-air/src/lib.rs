@@ -57,6 +57,13 @@ pub enum AirError {
     /// policy the verifier was instantiated with.
     #[error("public inputs did not match policy: {0}")]
     Policy(String),
+
+    /// Internal failure of the underlying STARK pipeline
+    /// (LDE / serialisation / wire-format issue).  Distinct from
+    /// `Verify` because the proof itself may be valid but the
+    /// surrounding plumbing failed.
+    #[error("internal prover/verifier error: {0}")]
+    Internal(String),
 }
 
 /// A small marker trait every AIR module's public inputs implement.
