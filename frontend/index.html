@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Match Me If You Can — demo registration</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      max-width: 720px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      color: #1f2933;
+      line-height: 1.45;
+    }
+    h1 { margin-bottom: 0.25rem; }
+    h1 small { font-weight: 400; color: #52606d; font-size: 0.7em; display: block; }
+    fieldset { border: 1px solid #cbd2d9; border-radius: 6px; padding: 1rem 1.5rem; }
+    legend { padding: 0 0.5rem; color: #52606d; }
+    label { display: block; margin: 0.6rem 0 0.2rem; font-weight: 600; font-size: 0.9rem; }
+    input, select {
+      width: 100%; padding: 0.5rem;
+      border: 1px solid #cbd2d9; border-radius: 4px;
+      box-sizing: border-box;
+      font: inherit;
+    }
+    button {
+      margin-top: 1.25rem; padding: 0.7rem 1.4rem;
+      background: #2bb673; color: white; border: none; border-radius: 4px;
+      font: inherit; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #239e60; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    pre {
+      background: #f5f7fa; padding: 1rem; border-radius: 6px;
+      border: 1px solid #cbd2d9; overflow-x: auto;
+      font-size: 0.85rem;
+    }
+    .scenario { padding: 0.4rem 0.8rem; border-radius: 4px;
+                background: #e0fcef; color: #0e6245; font-weight: 600;
+                display: inline-block; }
+    .ok    { color: #0e6245; }
+    .fail  { color: #ad1d1d; }
+    .panel { margin-top: 1.5rem; }
+    .small { color: #52606d; font-size: 0.85rem; }
+    code   { background: #f5f7fa; padding: 1px 4px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+
+<h1>
+  Match Me If You Can
+  <small>privacy-preserving registration via STARK-STIR proofs</small>
+</h1>
+
+<p>
+  This is the live demo for the architecture in §4 of the paper.  The
+  same form below registers a user under the active storage scenario;
+  the server's behaviour is determined by the <code>MMIYC_SCENARIO</code>
+  environment variable at start-up.  Open the SQLite file (default
+  <code>mmiyc.db</code>) in another terminal to inspect what was
+  actually persisted.
+</p>
+
+<div id="health" class="panel small">checking server …</div>
+
+<form id="reg-form" class="panel">
+  <fieldset>
+    <legend>Register</legend>
+
+    <div class="row">
+      <div>
+        <label for="dob">Date of birth</label>
+        <input type="date" id="dob" name="dob" required value="1990-06-15">
+      </div>
+      <div>
+        <label for="country">Country</label>
+        <select id="country" name="country" required>
+          <option>GB</option><option selected>DE</option><option>FR</option>
+          <option>IT</option><option>ES</option><option>NL</option>
+          <option>SE</option><option>AT</option><option>BE</option>
+          <option>US</option><option>CA</option><option>AU</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="postcode">Postcode prefix (optional)</label>
+        <input type="text" id="postcode" maxlength="4" placeholder="AB">
+      </div>
+      <div>
+        <label for="sex">Sex</label>
+        <select id="sex"><option>F</option><option>M</option><option>X</option></select>
+      </div>
+    </div>
+
+    <label for="email">Email</label>
+    <input type="email" id="email" required value="alice@example.com">
+
+    <label for="income">Annual income (GBP)</label>
+    <input type="number" id="income" required min="0" value="45000">
+
+    <button type="submit">Register</button>
+  </fieldset>
+</form>
+
+<div id="result" class="panel"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+const dobToDays = (yyyymmdd) => {
+  const [y, m, d] = yyyymmdd.split('-').map(Number);
+  const utc = Date.UTC(y, m - 1, d);
+  return Math.floor(utc / 86400000);
+};
+
+async function ping() {
+  try {
+    const r = await fetch('/healthz');
+    const t = await r.text();
+    $('health').innerHTML = r.ok
+      ? `server: <span class="ok">${t}</span>`
+      : `server: <span class="fail">unhealthy</span>`;
+  } catch (e) {
+    $('health').innerHTML = `server: <span class="fail">unreachable (${e})</span>`;
+  }
+}
+ping();
+
+$('reg-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const body = {
+    dob_days:     dobToDays($('dob').value),
+    country_code: $('country').value,
+    postcode:     $('postcode').value || null,
+    email:        $('email').value,
+    income_pence: Math.round(parseFloat($('income').value || '0') * 100),
+    sex:          $('sex').value,
+  };
+  const t0 = performance.now();
+  let r, j;
+  try {
+    r = await fetch('/register', {
+      method:  'POST',
+      headers: { 'content-type': 'application/json' },
+      body:    JSON.stringify(body),
+    });
+    j = await r.json().catch(() => null);
+  } catch (e) {
+    $('result').innerHTML = `<pre class="fail">network error: ${e}</pre>`;
+    return;
+  }
+  const dt = (performance.now() - t0).toFixed(1);
+
+  if (!r.ok) {
+    $('result').innerHTML = `
+      <pre class="fail">HTTP ${r.status}\n${JSON.stringify(j, null, 2)}</pre>`;
+    return;
+  }
+
+  const ageBytes     = j.age_proof_bytes;
+  const countryBytes = j.country_proof_bytes;
+  const proofPanel = ageBytes != null
+    ? `<p>Stored under <span class="scenario">${j.scenario}</span> scenario.</p>
+       <p class="small">
+         Persisted: <code>${ageBytes}</code> bytes age proof,
+         <code>${countryBytes}</code> bytes country proof.
+         No raw DOB / country in the database.
+       </p>`
+    : `<p>Stored under <span class="scenario">${j.scenario}</span> scenario.</p>
+       <p class="small">
+         Persisted: full DOB, country, postcode, email, income, sex
+         columns.  A breach hands these to the adversary directly.
+       </p>`;
+
+  $('result').innerHTML = `
+    <p class="ok">Registered <code>${j.user_id}</code> in ${dt} ms.</p>
+    ${proofPanel}
+    <p>
+      Try:
+      <code>GET /verify/age/${j.user_id}</code>
+      <code>GET /verify/country/${j.user_id}</code>
+    </p>
+    <pre>${JSON.stringify(j, null, 2)}</pre>
+  `;
+});
+</script>
+
+</body>
+</html>

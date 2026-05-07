@@ -24,30 +24,54 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
+use tower_http::{cors::CorsLayer, services::ServeDir};
 
 use mmiyc_air::{age, country};
+use mmiyc_prover::{prove_age, prove_country};
 use mmiyc_verifier::{verify_age, verify_country};
 
 use crate::{db, AppState, Scenario};
 
 /// Build the application router with all registered routes.
-pub fn build_router(state: AppState) -> Router {
-    Router::new()
+///
+/// `static_dir` is an optional path to a directory of static files
+/// to serve at `/` (typically the demo HTML form).  When `None`, no
+/// static fallback is registered.
+pub fn build_router(state: AppState, static_dir: Option<std::path::PathBuf>) -> Router {
+    let mut app = Router::new()
         .route("/healthz", get(health))
         .route("/register", post(register))
         .route("/verify/age/:user_id", get(verify_age_h))
         .route("/verify/country/:user_id", get(verify_country_h))
-        .with_state(state)
+        .with_state(state);
+
+    if let Some(dir) = static_dir {
+        // Mount static files at root, with the API routes above
+        // taking precedence (they're registered first).
+        app = app.fallback_service(ServeDir::new(dir));
+    }
+
+    // Permissive CORS — fine for a research demo.  Tighten in any
+    // production deployment.
+    app.layer(CorsLayer::permissive())
 }
 
 async fn health() -> &'static str { "ok" }
 
 // ─── /register ────────────────────────────────────────────────────
 
-/// PII-scenario registration body.
+/// Unified registration body.  In both storage scenarios the
+/// client submits the raw attribute values; the server's
+/// behaviour at `/register` depends on the active scenario:
+///
+/// * **PII**: persist the attributes verbatim into `users_pii`.
+/// * **Proofs**: run the local prover on the attributes against
+///   the deployment's policy, persist the resulting proof bytes
+///   (plus policy JSON for replay) into `users_proofs`, and
+///   discard the attribute values.
 #[allow(missing_docs)]
 #[derive(Debug, Deserialize)]
-pub struct PiiRegisterRequest {
+pub struct RegisterRequest {
     pub dob_days:     u32,
     pub country_code: String,
     pub postcode:     Option<String>,
@@ -56,35 +80,46 @@ pub struct PiiRegisterRequest {
     pub sex:          String,
 }
 
-/// Proofs-scenario registration body.  Proof bytes hex-encoded for
-/// JSON friendliness; public inputs as JSON-serialised AIR types so
-/// the verifier knows what policy to check against.
-#[allow(missing_docs)]
-#[derive(Debug, Deserialize)]
-pub struct ProofsRegisterRequest {
-    pub age_proof_hex:        String,
-    pub age_public:           age::Public,
-    pub country_proof_hex:    String,
-    pub country_public:       country::Public,
-    /// SHA3 of the e-mail, kept separately for login lookup.  The
-    /// e-mail value itself is never stored.
-    pub email_hash_hex:       String,
+#[derive(Debug, Serialize)]
+struct RegisterResponse {
+    user_id: String,
+    /// Storage scenario the row was persisted under.
+    scenario: &'static str,
+    /// For the Proofs scenario, the byte counts the server stored —
+    /// useful for the live demo's "look how little is leaked" panel.
+    age_proof_bytes:     Option<usize>,
+    country_proof_bytes: Option<usize>,
 }
 
-#[derive(Debug, Serialize)]
-struct RegisterResponse { user_id: String }
+/// Default deployment policies.  In a production system these
+/// would be loaded from a config file; we hardcode them for the
+/// demo.
+fn default_age_policy() -> age::Public {
+    age::Public {
+        today_days: current_days(),
+        min_age_years: 18,
+        max_age_years: 120,
+    }
+}
+
+fn default_eu_country_policy() -> (country::Public, Vec<[u8; 32]>) {
+    const EU_27: &[&str] = &[
+        "AT","BE","BG","HR","CY","CZ","DK","EE","FI","FR","DE","GR","HU","IE",
+        "IT","LV","LT","LU","MT","NL","PL","PT","RO","SK","SI","ES","SE",
+    ];
+    country::build_set(EU_27)
+}
 
 async fn register(
     State(state): State<AppState>,
-    body: String,
+    Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), AppError> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-    let user_id = mint_user_id(&body, now);
+    let body_repr = format!("{}-{}-{}-{}", req.dob_days, req.country_code, req.email, now);
+    let user_id = mint_user_id(&body_repr, now);
 
-    match state.scenario {
+    let (age_bytes, country_bytes) = match state.scenario {
         Scenario::Pii => {
-            let req: PiiRegisterRequest = serde_json::from_str(&body)
-                .map_err(|e| AppError::BadRequest(format!("invalid PII body: {}", e)))?;
             db::insert_pii(&state.pool, &db::PiiRow {
                 user_id:      user_id.clone(),
                 dob_days:     i64::from(req.dob_days),
@@ -95,38 +130,58 @@ async fn register(
                 sex:          req.sex,
                 created_at:   now,
             }).await.map_err(AppError::Internal)?;
+            (None, None)
         }
 
         Scenario::Proofs => {
-            let req: ProofsRegisterRequest = serde_json::from_str(&body)
-                .map_err(|e| AppError::BadRequest(format!("invalid Proofs body: {}", e)))?;
-            // Verify both proofs server-side BEFORE persisting.  This
-            // is a sanity-check on the client's prover; the verifier
-            // will re-run on every /verify query against the stored
-            // bytes anyway.
-            let age_proof = hex::decode(&req.age_proof_hex)
-                .map_err(|e| AppError::BadRequest(format!("age proof not hex: {}", e)))?;
-            let country_proof = hex::decode(&req.country_proof_hex)
-                .map_err(|e| AppError::BadRequest(format!("country proof not hex: {}", e)))?;
-            verify_age(&req.age_public, &age_proof)
-                .map_err(|e| AppError::BadRequest(format!("age proof rejected at registration: {}", e)))?;
-            verify_country(&req.country_public, &country_proof)
-                .map_err(|e| AppError::BadRequest(format!("country proof rejected at registration: {}", e)))?;
-            let email_hash = hex::decode(&req.email_hash_hex)
-                .map_err(|e| AppError::BadRequest(format!("email hash not hex: {}", e)))?;
+            // ----------------------------------------------------------
+            // Server-side prover (Phase 1 of the paper).  The raw
+            // attributes are present in this function's stack frame
+            // for the duration of the proof generation, then dropped.
+            // The client-side WASM prover variant of Phase 2 moves
+            // this prove() call into the browser; the resulting wire
+            // format would carry proof bytes instead of raw values.
+            // ----------------------------------------------------------
+            let age_pub = default_age_policy();
+            let age_w = age::Witness { dob_days: req.dob_days };
+            let age_proof = prove_age(&age_pub, &age_w)
+                .map_err(|e| AppError::BadRequest(format!("age proof failed: {}", e)))?;
+
+            let (country_pub, country_leaves) = default_eu_country_policy();
+            let country_w = country::Witness { country_code: req.country_code.clone() };
+            let country_proof = prove_country(&country_pub, &country_w, &country_leaves)
+                .map_err(|e| AppError::BadRequest(format!("country proof failed: {}", e)))?;
+
+            let email_hash = {
+                let mut h = Sha3_256::new();
+                h.update(b"mmiyc/v1/email-hash");
+                h.update(req.email.to_lowercase().as_bytes());
+                h.finalize().to_vec()
+            };
+
+            let age_n = age_proof.len();
+            let country_n = country_proof.len();
+
             db::insert_proofs(&state.pool, &db::ProofsRow {
                 user_id:             user_id.clone(),
                 age_proof:           Some(age_proof),
-                age_policy_json:     Some(serde_json::to_string(&req.age_public).unwrap()),
+                age_policy_json:     Some(serde_json::to_string(&age_pub).unwrap()),
                 country_proof:       Some(country_proof),
-                country_policy_json: Some(serde_json::to_string(&req.country_public).unwrap()),
+                country_policy_json: Some(serde_json::to_string(&country_pub).unwrap()),
                 email_hash:          Some(email_hash),
                 created_at:          now,
             }).await.map_err(AppError::Internal)?;
-        }
-    }
 
-    Ok((StatusCode::CREATED, Json(RegisterResponse { user_id })))
+            (Some(age_n), Some(country_n))
+        }
+    };
+
+    Ok((StatusCode::CREATED, Json(RegisterResponse {
+        user_id,
+        scenario: match state.scenario { Scenario::Pii => "pii", Scenario::Proofs => "proofs" },
+        age_proof_bytes:     age_bytes,
+        country_proof_bytes: country_bytes,
+    })))
 }
 
 fn mint_user_id(body: &str, ts: i64) -> String {
