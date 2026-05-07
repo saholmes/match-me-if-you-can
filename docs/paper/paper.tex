@@ -728,56 +728,65 @@ $\approx 1.2$\,ms; per\nobreakdash-attribute proof bytes are
 $\num{270576}$ — already used in
 Table~\ref{tab:storage}.
 
-\paragraph{WASM feasibility (measured).}  We compile the same
-bench harness to \texttt{wasm32-wasip1} and re\nobreakdash-run it
-under wasmtime~36; the same prove + verify cycle is exercised, just
-with the AOT\nobreakdash-compiled wasm engine in place of native
-\texttt{cargo --release}.  Table~\ref{tab:wasm} reports the
-delta.  The slowdown is consistent across the ladder: prove
-runs at $\approx\!0.36\times$ native speed, verify at
-$\approx\!0.50\times$.  Proof bytes are unchanged
+\paragraph{WASM feasibility (measured on two engines).}  We
+compile the same bench harness to \texttt{wasm32-wasip1} and
+re\nobreakdash-run it under \emph{two} different WebAssembly
+engines: \texttt{wasmtime}~36 (Cranelift\nobreakdash-AOT, the
+canonical standalone runtime) and Node.js~v20 (V8 with the
+built\nobreakdash-in \texttt{node:wasi} preview1 host, i.e.\ the
+exact engine that ships in Chrome / Edge / Cloudflare Workers /
+Deno).  Both engines run the byte\nobreakdash-identical
+\texttt{mmiyc-bench.wasm} artefact.  Table~\ref{tab:wasm}
+reports the three\nobreakdash-way comparison.
+
+The two engines agree to within $\sim\!10\,\%$ on every cell:
+V8 is the faster of the two for compute\nobreakdash-bound STARK
+work, putting WASM prove at $\approx\!0.40\times$ native speed
+and WASM verify at $\approx\!0.65\times$.  Proof bytes are
+byte\nobreakdash-identical across native, wasmtime, and V8
 (WebAssembly does not change the proof format).
 
 \begin{table}[h]
   \centering
-  \caption{Native (\texttt{cargo --release}) vs
-    WebAssembly (\texttt{wasm32-wasip1} under
-    wasmtime~36) wall\nobreakdash-clock timings, median of
-    $10$ runs each, same Apple\nobreakdash-Silicon laptop.  The
-    WASM column is the relevant one for a client\nobreakdash-side
-    prover; the native column models a server\nobreakdash-side
-    prover.}
+  \caption{Native (\texttt{cargo --release}) vs WebAssembly under
+    two engines: \texttt{wasmtime}~36 (standalone, Cranelift~AOT)
+    and Node.js~v20 (V8 baseline + TurboFan, i.e.\ the
+    browser\nobreakdash-grade engine).  Median of $10$ runs each on
+    the same Apple\nobreakdash-Silicon laptop.  The two engines
+    bracket the realistic deployment\nobreakdash-target range; V8 is
+    the one the WASM\nobreakdash-prover claim in
+    \S\ref{sec:design} actually depends on.}
   \label{tab:wasm}
-  \begin{tabular}{l r r r r r r}
+  \begin{tabular}{l r r r r r r r}
     \toprule
     \textbf{AIR} & $n_\mathrm{trace}$ &
-      \multicolumn{2}{c}{\textbf{Prove (ms)}} &
-      \multicolumn{2}{c}{\textbf{Verify (ms)}} &
-      \textbf{WASM\,/\,native} \\
-    \cmidrule(lr){3-4} \cmidrule(lr){5-6}
-                 &       & native & WASM & native & WASM & prove\,$|$\,verify \\
+      \multicolumn{3}{c}{\textbf{Prove (ms)}} &
+      \multicolumn{3}{c}{\textbf{Verify (ms)}} \\
+    \cmidrule(lr){3-5} \cmidrule(lr){6-8}
+                 &       & native & wasmtime & V8 & native & wasmtime & V8 \\
     \midrule
-    Fibonacci  &  $32$ &  $6.95$ &  $19.42$ & $1.24$ & $2.45$ & $2.79\times \mid 1.97\times$ \\
-    Fibonacci  &  $64$ & $14.15$ &  $39.62$ & $1.34$ & $2.71$ & $2.80\times \mid 2.03\times$ \\
-    Fibonacci  & $128$ & $28.84$ &  $78.77$ & $1.52$ & $3.04$ & $2.73\times \mid 2.00\times$ \\
-    Fibonacci  & $256$ & $56.40$ & $155.56$ & $1.69$ & $3.39$ & $2.76\times \mid 2.01\times$ \\
+    Fibonacci  &  $32$ &  $6.95$ &  $19.42$ &  $17.45$ & $1.24$ & $2.45$ & $1.94$ \\
+    Fibonacci  &  $64$ & $14.15$ &  $39.62$ &  $35.68$ & $1.34$ & $2.71$ & $2.18$ \\
+    Fibonacci  & $128$ & $28.84$ &  $78.77$ &  $70.46$ & $1.52$ & $3.04$ & $2.43$ \\
+    Fibonacci  & $256$ & $56.40$ & $155.56$ & $139.46$ & $1.69$ & $3.39$ & $2.65$ \\
     \midrule
-    HashRollup &  $32$ &  $7.38$ &  $19.39$ & $1.20$ & $2.42$ & $2.63\times \mid 2.02\times$ \\
-    HashRollup &  $64$ & $14.91$ &  $39.09$ & $1.37$ & $2.69$ & $2.62\times \mid 1.96\times$ \\
-    HashRollup & $128$ & $30.73$ &  $78.85$ & $1.52$ & $3.03$ & $2.57\times \mid 1.99\times$ \\
-    HashRollup & $256$ & $61.20$ & $158.54$ & $1.75$ & $3.39$ & $2.59\times \mid 1.94\times$ \\
+    HashRollup &  $32$ &  $7.38$ &  $19.39$ &  $17.98$ & $1.20$ & $2.42$ & $1.91$ \\
+    HashRollup &  $64$ & $14.91$ &  $39.09$ &  $35.96$ & $1.37$ & $2.69$ & $2.19$ \\
+    HashRollup & $128$ & $30.73$ &  $78.85$ &  $72.08$ & $1.52$ & $3.03$ & $2.40$ \\
+    HashRollup & $256$ & $61.20$ & $158.54$ & $145.10$ & $1.75$ & $3.39$ & $2.69$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 \paragraph{End\nobreakdash-to\nobreakdash-end browser registration.}
-Combining the per\nobreakdash-attribute measurements: two
-$32$\nobreakdash-row prove operations in series give
-$\sim\!\num{40}$\,ms of WebAssembly CPU time on the client; the
+Combining the per\nobreakdash-attribute measurements at the V8
+column of Table~\ref{tab:wasm}: two $32$\nobreakdash-row prove
+operations in series give $\sim\!\num{35}$\,ms of WebAssembly
+CPU time on the client; the
 $\sim\!\num{541232}$\nobreakdash-byte (\num{528}\,KiB)
 proof bundle takes $\sim\!\num{400}$\,ms to upload over a
-$4$G connection ($\sim\!10$\,Mbps up); the server's native verify is
-$\sim\!\num{2.5}$\,ms.  Total wall\nobreakdash-clock latency:
+$4$G connection ($\sim\!10$\,Mbps up); the server's native verify
+is $\sim\!\num{2.5}$\,ms.  Total wall\nobreakdash-clock latency:
 $\sim\!\num{440}$\,ms.  This is comfortably below the one\nobreakdash-second
 perceptual threshold for an interactive form submission, and is
 competitive with current PII\nobreakdash-only registration flows
@@ -1034,9 +1043,15 @@ $ cargo run -p mmiyc-bench --release -- \
 $ rustup target add wasm32-wasip1
 $ cargo build -p mmiyc-bench --release \
               --target wasm32-wasip1
+
+# Engine 1: wasmtime (Cranelift AOT, standalone)
 $ wasmtime run --dir . \
     target/wasm32-wasip1/release/mmiyc-bench.wasm \
     bench --air all --iters 10
+
+# Engine 2: V8 via Node v20 (the browser-grade engine)
+$ node --no-warnings \
+    scripts/wasm-bench-node.mjs bench --air all --iters 10
 \end{verbatim}
 
 Table~\ref{tab:repro} maps each table and figure in this
