@@ -23,16 +23,21 @@ description = "Privacy-preserving registration via STARK-STIR proofs over PII"
 # --- STARK-STIR core (path-dependency on the local stark-stir-swarm checkout)
 # These mirror the workspace deps in stark-stir-swarm so versions stay in lock-step.
 # Activate `parallel` (rayon multi-core for LDE FFT, constraint eval, FRI)
-# and `sha3-256` (NIST PQ Level 1 STARK params per STARK_STIR.pdf).
-# Without `parallel`, prove runs single-threaded ⇒ 4–8× slower than realistic.
-# To switch the demo to NIST PQ Level 3, change `sha3-256` → `sha3-384` here
-# AND in the `hash`/`merkle`/`transcript` lines below.
-deep_ali       = { path = "../stark-stir-swarm/crates/deep_ali", features = ["parallel", "sha3-256"] }
+# and `sha3-384` (NIST PQ **Level 3** STARK params per STARK_STIR.pdf).
+# - sha3-384 ⇒ FIPS 202 collision resistance λ_col = 192 bits
+# - Combined with NUM_QUERIES = 79 (Johnson-regime, ~2.5 bits/query at
+#   ρ₀ = 1/32) gives ε_IT ≈ 2⁻¹⁹⁷·⁵, comfortably below 2⁻¹⁹².
+# - Total bound (QROM): ε ≤ ε_IT + ε_bind + ε_FS, all ≤ 2⁻¹⁹².
+# To revert to Level 1 (faster, smaller proofs), change `sha3-384` →
+# `sha3-256` here AND in `hash`/`merkle`/`transcript` lines below, AND
+# set NUM_QUERIES = 54 in mmiyc-{prover,verifier}/src/ml_dsa_pok.rs +
+# deep_ali's V2_NUM_QUERIES.
+deep_ali       = { path = "../stark-stir-swarm/crates/deep_ali", features = ["parallel", "sha3-384"] }
 # Upstream `hash` crate requires one of the `sha3-256/384/512` features
-# to compile.  We pick `sha3-256` to match `stark-stir-swarm/swarm-dns`.
-hash           = { path = "../stark-stir-swarm/crates/hash",       default-features = false, features = ["sha3-256"] }
-merkle         = { path = "../stark-stir-swarm/crates/merkle",     default-features = false, features = ["sha3-256"] }
-transcript     = { path = "../stark-stir-swarm/crates/transcript", default-features = false, features = ["sha3-256"] }
+# to compile.  All four lines below must agree on the same level.
+hash           = { path = "../stark-stir-swarm/crates/hash",       default-features = false, features = ["sha3-384"] }
+merkle         = { path = "../stark-stir-swarm/crates/merkle",     default-features = false, features = ["sha3-384"] }
+transcript     = { path = "../stark-stir-swarm/crates/transcript", default-features = false, features = ["sha3-384"] }
 ark-goldilocks = { path = "../stark-stir-swarm/crates/ark-goldilocks", version = "0.1.0" }
 public-inputs  = { path = "../stark-stir-swarm/crates/public-inputs" }
 

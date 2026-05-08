@@ -25,7 +25,12 @@ use sha3::{Digest as _, Sha3_256};
 type Ext = SexticExt;
 
 const BLOWUP: usize = 32;
-const NUM_QUERIES: usize = 54;
+// NIST PQ Level 3 (Johnson-regime, ~2.5 bits/query unconditional).
+// 79 × 2.5 = 197.5 bits ≥ 192-bit target.  See
+// `feedback_stir_johnson_unconditional_only.md`: STIR's per-query
+// rate at capacity (5 bits) is conjectural; only the Johnson regime
+// is proven, and it matches FRI under BCIKS at the same r.
+const NUM_QUERIES: usize = 79;
 const SEED_Z: u64 = 0xDEEF_BAAD;
 
 /// Re-exported here so callers can construct the same shape used

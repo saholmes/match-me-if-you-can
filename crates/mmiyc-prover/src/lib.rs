@@ -43,8 +43,13 @@ type Ext = SexticExt;
 
 /// Reed-Solomon blowup factor (1/ρ_0 = 32).
 const BLOWUP: usize = 32;
-/// FRI query count (~128-bit security with conservative gap).
-const NUM_QUERIES: usize = 54;
+/// FRI/STIR query count.  79 = NIST PQ Level 3 (Johnson-regime
+/// unconditional): 79 × ½·log₂(1/ρ_0) = 79 × 2.5 = 197.5 ≥ 192 bits.
+/// Reverting to Level 1 (sha3-256, λ=128): NUM_QUERIES = 54.  Both
+/// rates use the proven Johnson bound (BCIKS for FRI / STIR Thm. 1);
+/// the capacity-regime rate (~5 bits/query) is conjectural and not
+/// used here.
+const NUM_QUERIES: usize = 79;
 /// Fixed Fiat-Shamir-style starting seed; the public-inputs hash
 /// is what differentiates proofs across policies, not this.
 const SEED_Z: u64 = 0xDEEF_BAAD;
