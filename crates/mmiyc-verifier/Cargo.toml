@@ -6,6 +6,12 @@ license.workspace = true
 authors.workspace = true
 description = "Native STARK proof verification for Match-Me-If-You-Can"
 
+[features]
+default  = ["mldsa-44"]
+mldsa-44 = []
+mldsa-65 = []
+mldsa-87 = []
+
 [dependencies]
 mmiyc-air    = { path = "../mmiyc-air" }
 # `verify_ml_dsa_signature_pok` shares the FIPS 204 byte-decode +

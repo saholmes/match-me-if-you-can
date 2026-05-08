@@ -362,7 +362,10 @@ pub fn synthesise_v2_from_signature(
     pk_bytes: &[u8],
     message: &[u8],
     sig_bytes: &[u8],
-) -> Option<(deep_ali::ml_dsa_verify_air_v2_orchestration::V2Witness, [u8; 32])> {
+) -> Option<(
+    deep_ali::ml_dsa_verify_air_v2_orchestration::V2Witness,
+    [u8; deep_ali::ml_dsa::params::C_TILDE_BYTES],
+)> {
     use deep_ali::ml_dsa::params::Q;
     use deep_ali::ml_dsa_codec::{decode_pk, decode_signature, expand_a, t1_times_2d};
     use deep_ali::ml_dsa_decompose;
@@ -440,13 +443,16 @@ pub fn synthesise_v2_from_signature(
             adjusted_r1[k][i] = adj;
         }
     }
-    let total_bits = K * N * 6;
+    // W1Encode (FIPS 204 §3.5.7): pack adjusted_r1 with bitlen(m−1)
+    // bits per coefficient.  6 (L1) / 4 (L3/L5).
+    let bits_per_coef = deep_ali::ml_dsa::params::W1_BITS_PER_COEF;
+    let total_bits = K * N * bits_per_coef;
     let mut w1bytes = vec![0u8; total_bits / 8];
     for k in 0..K {
         for i in 0..N {
-            let bit_offset = (k * N + i) * 6;
+            let bit_offset = (k * N + i) * bits_per_coef;
             let val = adjusted_r1[k][i] as u64;
-            for b in 0..6 {
+            for b in 0..bits_per_coef {
                 let bit = ((val >> b) & 1) as u8;
                 w1bytes[(bit_offset + b) / 8] |= bit << ((bit_offset + b) % 8);
             }

@@ -24,6 +24,16 @@ use sha3::{Digest as _, Sha3_256};
 
 type Ext = SexticExt;
 
+// Active rustcrypto ml-dsa scheme matching the deep_ali mldsa-N feature.
+#[cfg(feature = "mldsa-44")]
+use ml_dsa::MlDsa44 as ActiveScheme;
+#[cfg(feature = "mldsa-65")]
+use ml_dsa::MlDsa65 as ActiveScheme;
+#[cfg(feature = "mldsa-87")]
+use ml_dsa::MlDsa87 as ActiveScheme;
+#[cfg(not(any(feature = "mldsa-44", feature = "mldsa-65", feature = "mldsa-87")))]
+use ml_dsa::MlDsa44 as ActiveScheme;
+
 const BLOWUP: usize = 32;
 // Auto-derived from deep_ali's active `sha3-N` feature: 54/79/105
 // for NIST PQ Levels 1/3/5 (Johnson-regime unconditional).
@@ -108,15 +118,15 @@ pub fn verify_ml_dsa_signature_pok(
 ) -> Result<(), AirError> {
     // Layer 1: native ML-DSA-44 verify.
     use ml_dsa::{
-        signature::Verifier as _, EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey,
+        signature::Verifier as _, EncodedVerifyingKey, Signature, VerifyingKey,
     };
-    let pk_arr: &EncodedVerifyingKey<MlDsa44> = pk_bytes
+    let pk_arr: &EncodedVerifyingKey<ActiveScheme> = pk_bytes
         .try_into()
         .map_err(|_| AirError::Deserialise(format!(
             "ml-dsa-44 pk length mismatch: got {}", pk_bytes.len()
         )))?;
-    let vk = VerifyingKey::<MlDsa44>::decode(pk_arr);
-    let sig = Signature::<MlDsa44>::try_from(sig_bytes)
+    let vk = VerifyingKey::<ActiveScheme>::decode(pk_arr);
+    let sig = Signature::<ActiveScheme>::try_from(sig_bytes)
         .map_err(|e| AirError::Deserialise(format!("ml-dsa-44 sig decode: {e}")))?;
     vk.verify(message, &sig)
         .map_err(|e| AirError::Verify(format!("ml-dsa-44 native verify rejected: {e}")))?;
@@ -159,14 +169,14 @@ pub fn verify_ml_dsa_signature_pok_v15(
 
     // Layer 1: native ML-DSA-44 verify (defense in depth).
     use ml_dsa::{
-        signature::Verifier as _, EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey,
+        signature::Verifier as _, EncodedVerifyingKey, Signature, VerifyingKey,
     };
-    let pk_arr: &EncodedVerifyingKey<MlDsa44> = pk_bytes.try_into()
+    let pk_arr: &EncodedVerifyingKey<ActiveScheme> = pk_bytes.try_into()
         .map_err(|_| AirError::Deserialise(format!(
             "ml-dsa-44 pk length mismatch: got {}", pk_bytes.len()
         )))?;
-    let vk = VerifyingKey::<MlDsa44>::decode(pk_arr);
-    let sig = Signature::<MlDsa44>::try_from(sig_bytes)
+    let vk = VerifyingKey::<ActiveScheme>::decode(pk_arr);
+    let sig = Signature::<ActiveScheme>::try_from(sig_bytes)
         .map_err(|e| AirError::Deserialise(format!("ml-dsa-44 sig decode: {e}")))?;
     vk.verify(message, &sig)
         .map_err(|e| AirError::Verify(format!("ml-dsa-44 native verify rejected: {e}")))?;
@@ -232,14 +242,14 @@ pub fn verify_ml_dsa_signature_pok_v17(
 
     // Layer 1: native ML-DSA-44 verify (defense in depth).
     use ml_dsa::{
-        signature::Verifier as _, EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey,
+        signature::Verifier as _, EncodedVerifyingKey, Signature, VerifyingKey,
     };
-    let pk_arr: &EncodedVerifyingKey<MlDsa44> = pk_bytes.try_into()
+    let pk_arr: &EncodedVerifyingKey<ActiveScheme> = pk_bytes.try_into()
         .map_err(|_| AirError::Deserialise(format!(
             "ml-dsa-44 pk length mismatch: got {}", pk_bytes.len()
         )))?;
-    let vk = VerifyingKey::<MlDsa44>::decode(pk_arr);
-    let sig = Signature::<MlDsa44>::try_from(sig_bytes)
+    let vk = VerifyingKey::<ActiveScheme>::decode(pk_arr);
+    let sig = Signature::<ActiveScheme>::try_from(sig_bytes)
         .map_err(|e| AirError::Deserialise(format!("ml-dsa-44 sig decode: {e}")))?;
     vk.verify(message, &sig)
         .map_err(|e| AirError::Verify(format!("ml-dsa-44 native verify rejected: {e}")))?;
@@ -485,14 +495,27 @@ mod tests {
     /// over the encoded `(pk, sig)` bytes, then verify.  Exercises
     /// the full FIPS 204 byte-decode + ExpandA + NTT chain.
     fn fresh_real_signature_bytes(message: &[u8]) -> (Vec<u8>, Vec<u8>) {
-        use ml_dsa::{KeyGen, MlDsa44, signature::{Keypair as _, SignatureEncoding as _, Signer as _}};
+        use ml_dsa::{KeyGen, signature::{Keypair as _, SignatureEncoding as _, Signer as _}};
         use getrandom::{rand_core::UnwrapErr, SysRng};
+        // Pick the rustcrypto scheme matching the active deep_ali feature.
+        #[cfg(feature = "mldsa-44")]
+        use ml_dsa::MlDsa44 as ActiveScheme;
+        #[cfg(feature = "mldsa-65")]
+        use ml_dsa::MlDsa65 as ActiveScheme;
+        #[cfg(feature = "mldsa-87")]
+        use ml_dsa::MlDsa87 as ActiveScheme;
+        // Default for pure-default builds (no level features active anywhere
+        // in the tree): fall back to ML-DSA-44 to keep the test compiling
+        // when run under the workspace's L1 default.
+        #[cfg(not(any(feature = "mldsa-44", feature = "mldsa-65", feature = "mldsa-87")))]
+        use ml_dsa::MlDsa44 as ActiveScheme;
+
         let mut rng = UnwrapErr(SysRng);
-        let kp = MlDsa44::key_gen(&mut rng);
+        let kp = <ActiveScheme as KeyGen>::key_gen(&mut rng);
         let pk_arr = kp.verifying_key().encode();
         let pk_slice: &[u8] = pk_arr.as_ref();
         let pk_bytes = pk_slice.to_vec();
-        let sig: ml_dsa::Signature<MlDsa44> = kp.sign(message);
+        let sig: ml_dsa::Signature<ActiveScheme> = kp.sign(message);
         let sig_arr = sig.to_bytes();
         let sig_slice: &[u8] = sig_arr.as_ref();
         let sig_bytes = sig_slice.to_vec();
