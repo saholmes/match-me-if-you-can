@@ -64,6 +64,15 @@
 
 <div id="health" class="panel small">checking server …</div>
 
+<div id="ml-dsa-demo" class="panel small">
+  <button type="button" id="ml-dsa-demo-btn"
+          style="background:#6a4caf;">
+    Demo ML-DSA-STARK PoK
+  </button>
+  <span class="small">— phase 7/8 v1: server proves an ML-DSA-44 STARK PoK over deterministic synthetic NTT inputs; browser verifies via WASM (deep_ali → ml_dsa_verify_air → FRI).</span>
+  <div id="ml-dsa-demo-result"></div>
+</div>
+
 <form id="reg-form" class="panel">
   <fieldset>
     <legend>Register</legend>
@@ -177,6 +186,8 @@ window._mmiycVerifyRsaPok = (nHex, messageHex, proofHex) =>
   callWorker('verify-rsa-pok', [nHex, messageHex, proofHex]);
 window._mmiycVerifyIncome = (proofHex, nHex) =>
   callWorker('verify-income', [proofHex, nHex || '']);
+window._mmiycVerifyMlDsaPok = (nonceHex, proofHex) =>
+  callWorker('verify-ml-dsa-pok', [nonceHex, proofHex]);
 
 document.getElementById('browser-prove-btn').addEventListener('click', async () => {
   const out = document.getElementById('wasm-result');
@@ -226,6 +237,59 @@ const dobToDays = (yyyymmdd) => {
   return Math.floor(utc / 86400000);
 };
 
+// ML-DSA-STARK PoK demo: server produces a STARK PoK over
+// deterministically-derived synthetic NTT inputs, browser
+// verifies via WASM.  Phase 7/8 v1 — the synthetic-from-nonce
+// path stands in for the next-session ExpandA+sigDecode plumbing
+// that would derive the inputs from a real ML-DSA signature.
+async function runMlDsaPokDemo() {
+  const out = $('ml-dsa-demo-result');
+  out.innerHTML = '<span class="small">requesting ML-DSA-STARK PoK from server …</span>';
+
+  const nonceBytes = new Uint8Array(32);
+  crypto.getRandomValues(nonceBytes);
+  const nonceHex = bytesToHex(nonceBytes);
+
+  let r, j;
+  try {
+    r = await fetch('/service/ml_dsa_pok', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nonce_hex: nonceHex }),
+    });
+    j = await r.json();
+  } catch (e) {
+    out.innerHTML = `<span class="fail">network error: ${e}</span>`;
+    return;
+  }
+  if (!r.ok) {
+    out.innerHTML = `<span class="fail">HTTP ${r.status}: ${JSON.stringify(j)}</span>`;
+    return;
+  }
+
+  out.innerHTML = `<span class="small">verifying in WASM (proof ${(j.proof_bytes / 1024).toFixed(1)} KiB, server prove ${j.prove_ms.toFixed(1)} ms) …</span>`;
+  const tStart = performance.now();
+  let v;
+  try {
+    v = await window._mmiycVerifyMlDsaPok(nonceHex, j.proof_pok_hex);
+  } catch (e) {
+    out.innerHTML = `<span class="fail">verify_ml_dsa_pok threw: ${e}</span>`;
+    return;
+  }
+  const wall = performance.now() - tStart;
+
+  out.innerHTML = v.verified
+    ? `<span class="ok">✓ ML-DSA-STARK PoK verified</span>
+       <br>Server prove: ${j.prove_ms.toFixed(1)} ms.
+       Browser WASM verify: ${v.verify_ms.toFixed(1)} ms (wall ${wall.toFixed(1)} ms).
+       Proof: ${(j.proof_bytes / 1024).toFixed(1)} KiB.
+       <br>Both sides re-derived the same synthetic NTT-domain
+       inputs from the random nonce; the STARK proves the
+       polynomial-arithmetic core of FIPS 204 §3 Algorithm 3 step 5
+       (w'_approx_ntt = Â·NTT(z) − NTT(c)·NTT(t1·2^d)) holds.`
+    : `<span class="fail">ML-DSA-STARK PoK verification failed in WASM.</span>`;
+}
+
 async function ping() {
   try {
     const r = await fetch('/healthz');
@@ -238,6 +302,10 @@ async function ping() {
   }
 }
 ping();
+
+// Wire the ML-DSA-STARK PoK demo button.
+const mlDsaDemoBtn = $('ml-dsa-demo-btn');
+if (mlDsaDemoBtn) mlDsaDemoBtn.addEventListener('click', runMlDsaPokDemo);
 
 // Fetch the service's RSA-2048 public modulus once at page load.
 // Cached on `window` so the income-verify button can hand it to

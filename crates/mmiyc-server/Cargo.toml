@@ -42,6 +42,17 @@ sha2    = { version = "0.10", features = ["oid"] }
 # the strongest form of the designated-verifier claim.
 aes-gcm = "0.10"
 
+# Post-quantum signature primitive (FIPS 204, ML-DSA-44 = NIST
+# security category 2 / "level 1") for the next-generation gate.
+# Currently used only by tests; the production gate is still
+# RSASSA-PKCS#1 v1.5 — the AIR for ML-DSA verify is a multi-session
+# project (see docs/ml_dsa_air_plan.md).
+ml-dsa    = "0.1.0-rc.9"
+# ml-dsa pins rand_core = 0.10, which dropped its built-in
+# `OsRng`.  The official replacement is `getrandom::SysRng` under
+# the `sys_rng` feature (see ml-dsa's own usage example).
+getrandom = { version = "0.4", features = ["sys_rng"] }
+
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 

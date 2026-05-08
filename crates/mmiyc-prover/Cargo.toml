@@ -12,6 +12,7 @@ mmiyc-air = { path = "../mmiyc-air" }
 deep_ali       = { workspace = true }
 ark-ff         = { workspace = true }
 ark-goldilocks = { workspace = true }
+ark-poly       = { workspace = true }
 
 serde         = { workspace = true }
 thiserror     = { workspace = true }

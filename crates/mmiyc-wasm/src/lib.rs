@@ -259,6 +259,46 @@ fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Verify an ML-DSA-STARK PoK in the browser.  The public inputs
+/// are derived deterministically from `nonce_hex` (must match the
+/// server's same derivation) — see `mmiyc_prover::ml_dsa_pok`'s
+/// `synthesise_from_nonce` for the demo path.  Returns
+/// `{verified, verify_ms}`.
+#[wasm_bindgen]
+pub fn verify_ml_dsa_pok_in_browser(
+    nonce_hex: String,
+    proof_hex: String,
+) -> Result<JsValue, JsValue> {
+    let nonce_vec = hex_to_bytes(&nonce_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: nonce_hex"))?;
+    if nonce_vec.len() != 32 {
+        return Err(JsValue::from_str(&format!(
+            "nonce must be 32 bytes; got {}", nonce_vec.len()
+        )));
+    }
+    let mut nonce = [0u8; 32];
+    nonce.copy_from_slice(&nonce_vec);
+
+    let proof = hex_to_bytes(&proof_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: proof_hex"))?;
+
+    // Reconstruct PI deterministically from the nonce.
+    let (pi_prover, _witness) = mmiyc_prover::ml_dsa_pok::synthesise_from_nonce(&nonce);
+    let pi = mmiyc_verifier::ml_dsa_pok::MlDsaPokPublicInputs {
+        a_ntt:        pi_prover.a_ntt,
+        c_ntt:        pi_prover.c_ntt,
+        t1d_ntt:      pi_prover.t1d_ntt,
+        w_approx_ntt: pi_prover.w_approx_ntt,
+    };
+
+    let t0 = web_sys_now();
+    let verified = mmiyc_verifier::ml_dsa_pok::verify_ml_dsa_pok(&pi, &proof).is_ok();
+    let verify_ms = web_sys_now() - t0;
+
+    serde_wasm_bindgen::to_value(&VerifyResult { verified, verify_ms })
+        .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
 /// Wall-clock millisecond timer.  Browser-only (uses
 /// `performance.now()`); falls through to a tiny stub on native
 /// builds so the crate's `cargo test` still works.

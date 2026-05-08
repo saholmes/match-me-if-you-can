@@ -17,6 +17,8 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms, missing_docs)]
 
+pub mod ml_dsa_pok;
+
 use ark_ff::Zero as _;
 use ark_goldilocks::Goldilocks as F;
 use ark_serialize::{CanonicalSerialize, Compress};

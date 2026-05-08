@@ -7,6 +7,8 @@
 #![deny(unsafe_code)]
 #![warn(rust_2018_idioms, missing_docs)]
 
+pub mod ml_dsa_pok;
+
 use ark_serialize::{CanonicalDeserialize, Compress, Validate};
 use deep_ali::{
     fri::{deep_fri_verify, DeepFriParams, DeepFriProof},

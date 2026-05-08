@@ -9,6 +9,7 @@
 
 pub mod at_rest;
 pub mod db;
+pub mod ml_dsa;
 pub mod router;
 
 use std::sync::Arc;

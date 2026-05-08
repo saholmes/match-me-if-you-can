@@ -54,6 +54,7 @@ pub fn build_router(state: AppState, static_dir: Option<std::path::PathBuf>) -> 
         .route("/verify/country/:user_id", get(verify_country_h))
         .route("/verify/income/:user_id", post(verify_income_locked))
         .route("/service/pubkey", get(service_pubkey))
+        .route("/service/ml_dsa_pok", post(ml_dsa_pok_demo))
         .with_state(state);
 
     if let Some(dir) = static_dir {
@@ -393,6 +394,51 @@ struct ServicePubkey {
     /// `verify_rsa_pok_in_browser` along with the message to gate
     /// trust on a `/verify/income/:user_id` response.
     n_hex: String,
+}
+
+// ─── /service/ml_dsa_pok (demo) ────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct MlDsaPokDemoRequest {
+    /// 32-byte hex nonce; both server and browser derive the same
+    /// synthetic NTT-domain inputs from this nonce.
+    nonce_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+struct MlDsaPokDemoResponse {
+    /// Hex-encoded FRI proof bytes.
+    proof_pok_hex: String,
+    /// Server-side prove wall time (informational).
+    prove_ms: f64,
+    /// Size of the proof bytes (informational).
+    proof_bytes: usize,
+}
+
+async fn ml_dsa_pok_demo(
+    Json(req): Json<MlDsaPokDemoRequest>,
+) -> Result<Json<MlDsaPokDemoResponse>, AppError> {
+    let nonce_vec = hex::decode(&req.nonce_hex)
+        .map_err(|e| AppError::BadRequest(format!("nonce_hex: {e}")))?;
+    if nonce_vec.len() != 32 {
+        return Err(AppError::BadRequest(format!(
+            "nonce must be 32 bytes; got {}", nonce_vec.len()
+        )));
+    }
+    let mut nonce = [0u8; 32];
+    nonce.copy_from_slice(&nonce_vec);
+
+    let t0 = std::time::Instant::now();
+    let (pi, witness) = mmiyc_prover::ml_dsa_pok::synthesise_from_nonce(&nonce);
+    let proof = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_pok(&pi, &witness)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("ml-dsa-pok prove: {e}")))?;
+    let prove_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+    Ok(Json(MlDsaPokDemoResponse {
+        proof_bytes: proof.len(),
+        proof_pok_hex: hex::encode(&proof),
+        prove_ms,
+    }))
 }
 
 async fn service_pubkey(State(state): State<AppState>)
