@@ -6,6 +6,12 @@ license.workspace = true
 authors.workspace = true
 description = "STARK proof generation wrapper for Match-Me-If-You-Can"
 
+[features]
+default  = ["mldsa-44"]
+mldsa-44 = []
+mldsa-65 = []
+mldsa-87 = []
+
 [dependencies]
 mmiyc-air = { path = "../mmiyc-air" }
 

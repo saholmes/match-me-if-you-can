@@ -5,16 +5,37 @@
 //! ~1.5–3× slower than native.
 
 fn main() {
-    use ml_dsa::{KeyGen, MlDsa44, signature::{Keypair as _, SignatureEncoding as _, Signer as _}};
+    use ml_dsa::{KeyGen, signature::{Keypair as _, SignatureEncoding as _, Signer as _}};
     use getrandom::{rand_core::UnwrapErr, SysRng};
+
+    // Pick the rustcrypto scheme matching the active mmiyc-verifier feature.
+    #[cfg(feature = "mldsa-44")]
+    use ml_dsa::MlDsa44 as ActiveScheme;
+    #[cfg(feature = "mldsa-65")]
+    use ml_dsa::MlDsa65 as ActiveScheme;
+    #[cfg(feature = "mldsa-87")]
+    use ml_dsa::MlDsa87 as ActiveScheme;
+    #[cfg(not(any(feature = "mldsa-44", feature = "mldsa-65", feature = "mldsa-87")))]
+    use ml_dsa::MlDsa44 as ActiveScheme;
+
+    eprintln!("active scheme: {} ({} bytes pk / {} bytes sig)",
+        deep_ali::ml_dsa::params::SCHEME_NAME,
+        deep_ali::ml_dsa::params::PUBLIC_KEY_BYTES,
+        deep_ali::ml_dsa::params::SIGNATURE_BYTES,
+    );
+    eprintln!("STARK level: NIST L{} (sha3-{}, NUM_QUERIES = {})",
+        deep_ali::stark_level::NIST_LEVEL,
+        deep_ali::stark_level::COLLISION_BITS,
+        deep_ali::stark_level::NUM_QUERIES_LEVEL,
+    );
 
     let message: &[u8] = b"v15-bench-message";
     let mut rng = UnwrapErr(SysRng);
-    let kp = MlDsa44::key_gen(&mut rng);
+    let kp = <ActiveScheme as KeyGen>::key_gen(&mut rng);
     let pk_arr = kp.verifying_key().encode();
     let pk_slice: &[u8] = pk_arr.as_ref();
     let pk_bytes = pk_slice.to_vec();
-    let sig: ml_dsa::Signature<MlDsa44> = kp.sign(message);
+    let sig: ml_dsa::Signature<ActiveScheme> = kp.sign(message);
     let sig_arr = sig.to_bytes();
     let sig_slice: &[u8] = sig_arr.as_ref();
     let sig_bytes = sig_slice.to_vec();

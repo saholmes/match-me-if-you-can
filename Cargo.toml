@@ -32,12 +32,12 @@ description = "Privacy-preserving registration via STARK-STIR proofs over PII"
 # `sha3-256` here AND in `hash`/`merkle`/`transcript` lines below, AND
 # set NUM_QUERIES = 54 in mmiyc-{prover,verifier}/src/ml_dsa_pok.rs +
 # deep_ali's V2_NUM_QUERIES.
-deep_ali       = { path = "../stark-stir-swarm/crates/deep_ali", features = ["parallel", "sha3-384", "mldsa-65"], default-features = false }
+deep_ali       = { path = "../stark-stir-swarm/crates/deep_ali", features = ["parallel", "sha3-256", "mldsa-44"], default-features = false }
 # Upstream `hash` crate requires one of the `sha3-256/384/512` features
 # to compile.  All four lines below must agree on the same level.
-hash           = { path = "../stark-stir-swarm/crates/hash",       default-features = false, features = ["sha3-384"] }
-merkle         = { path = "../stark-stir-swarm/crates/merkle",     default-features = false, features = ["sha3-384"] }
-transcript     = { path = "../stark-stir-swarm/crates/transcript", default-features = false, features = ["sha3-384"] }
+hash           = { path = "../stark-stir-swarm/crates/hash",       default-features = false, features = ["sha3-256"] }
+merkle         = { path = "../stark-stir-swarm/crates/merkle",     default-features = false, features = ["sha3-256"] }
+transcript     = { path = "../stark-stir-swarm/crates/transcript", default-features = false, features = ["sha3-256"] }
 ark-goldilocks = { path = "../stark-stir-swarm/crates/ark-goldilocks", version = "0.1.0" }
 public-inputs  = { path = "../stark-stir-swarm/crates/public-inputs" }
 
