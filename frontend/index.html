@@ -199,6 +199,10 @@ window._mmiycVerifyMlDsaPok = (nonceHex, proofHex) =>
   callWorker('verify-ml-dsa-pok', [nonceHex, proofHex]);
 window._mmiycVerifyMlDsaSignaturePok = (pkHex, msgHex, sigHex, proofHex) =>
   callWorker('verify-ml-dsa-signature-pok', [pkHex, msgHex, sigHex, proofHex]);
+window._mmiycVerifyMlDsaSignaturePokV15 = (pkHex, msgHex, sigHex, proofHex) =>
+  callWorker('verify-ml-dsa-signature-pok-v15', [pkHex, msgHex, sigHex, proofHex]);
+window._mmiycVerifyMlDsaSignaturePokV17 = (pkHex, msgHex, sigHex, proofHex) =>
+  callWorker('verify-ml-dsa-signature-pok-v17', [pkHex, msgHex, sigHex, proofHex]);
 
 document.getElementById('browser-prove-btn').addEventListener('click', async () => {
   const out = document.getElementById('wasm-result');
@@ -501,6 +505,16 @@ $('reg-form').addEventListener('submit', async (ev) => {
                  style="background:#1f8a70;margin-left:0.5rem;">
            Verify income (ML-DSA-STARK gate)
          </button>
+         <button type="button" id="verify-income-ml-dsa-v15-btn"
+                 data-user-id="${j.user_id}"
+                 style="background:#3a6f3a;margin-left:0.5rem;">
+           Verify income (v1.5 + norm bound)
+         </button>
+         <button type="button" id="verify-income-ml-dsa-v17-btn"
+                 data-user-id="${j.user_id}"
+                 style="background:#0f5e9c;margin-left:0.5rem;">
+           Verify income (v1.7 PQ-airtight gate)
+         </button>
          ${window._mmiycLastIncomeProofHex
            ? `<button type="button" id="simulate-exfil-btn"
                       style="background:#a8527d;margin-left:0.5rem;">
@@ -526,6 +540,10 @@ $('reg-form').addEventListener('submit', async (ev) => {
   if (verifyBtn) verifyBtn.addEventListener('click', verifyIncomeLocked);
   const verifyMlDsaBtn = $('verify-income-ml-dsa-btn');
   if (verifyMlDsaBtn) verifyMlDsaBtn.addEventListener('click', verifyIncomeLockedMlDsa);
+  const verifyMlDsaV15Btn = $('verify-income-ml-dsa-v15-btn');
+  if (verifyMlDsaV15Btn) verifyMlDsaV15Btn.addEventListener('click', verifyIncomeLockedMlDsaV15);
+  const verifyMlDsaV17Btn = $('verify-income-ml-dsa-v17-btn');
+  if (verifyMlDsaV17Btn) verifyMlDsaV17Btn.addEventListener('click', verifyIncomeLockedMlDsaV17);
   const exfilBtn = $('simulate-exfil-btn');
   if (exfilBtn) exfilBtn.addEventListener('click', simulateExfiltration);
 });
@@ -612,6 +630,154 @@ async function verifyIncomeLockedMlDsa(ev) {
        <code>sk_ml_dsa</code> cannot fabricate this PoK under
        either assumption.</span>`
     : `<span class="fail">ML-DSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
+}
+
+// **v1.5 fallback gate** — v1 + in-circuit norm bound `‖z‖∞ < γ_1 − β`.
+// Kept as a runtime-selectable middle ground in case the v1.7 prove
+// time (~8 s) is unacceptable for a deployment.  Server prove ~770 ms
+// (release).
+async function verifyIncomeLockedMlDsaV15(ev) {
+  const userId = ev.currentTarget.getAttribute('data-user-id');
+  const out = $('verify-income-result');
+  out.innerHTML = '<span class="small">requesting v1.5 ML-DSA-STARK gate response (server prove ~0.8 s) …</span>';
+
+  const nonceBytes = new Uint8Array(32);
+  crypto.getRandomValues(nonceBytes);
+  const nonceHex = bytesToHex(nonceBytes);
+
+  let r, j;
+  try {
+    r = await fetch(`/verify/income/ml_dsa_v15/${encodeURIComponent(userId)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nonce_hex: nonceHex }),
+    });
+    j = await r.json();
+  } catch (e) {
+    out.innerHTML = `<span class="fail">network error: ${e}</span>`;
+    return;
+  }
+  if (!r.ok) {
+    out.innerHTML = `<span class="fail">HTTP ${r.status}: ${JSON.stringify(j)}</span>`;
+    return;
+  }
+  if (!j.verified) {
+    out.innerHTML = `<span class="fail">STARK verification failed; v1.5 gate returns nil.</span>`;
+    return;
+  }
+  if (!j.proof_pok_hex || !j.signed_message_hex || !j.sig_hex || !j.ml_dsa_pk_hex) {
+    out.innerHTML = `<span class="fail">Missing v1.5 ML-DSA gate fields.</span>`;
+    return;
+  }
+
+  out.innerHTML = `<span class="small">verifying v1.5 ML-DSA-STARK PoK in WASM
+    (proof ${(j.proof_pok_hex.length / 2 / 1024).toFixed(1)} KiB) …</span>`;
+  const tStart = performance.now();
+  let v;
+  try {
+    v = await window._mmiycVerifyMlDsaSignaturePokV15(
+      j.ml_dsa_pk_hex, j.signed_message_hex, j.sig_hex, j.proof_pok_hex,
+    );
+  } catch (e) {
+    out.innerHTML = `<span class="fail">verify_ml_dsa_signature_pok_v15 threw: ${e}</span>`;
+    return;
+  }
+  const wall = performance.now() - tStart;
+
+  out.innerHTML = v.verified
+    ? `<span class="ok">Service-attested verification ✓ (v1.5 ML-DSA-STARK gate)</span>
+       <br>STARK PoK enforces in-circuit:
+       (a) the polynomial-arithmetic verify equation,
+       and (b) the response-polynomial norm bound
+       <code>‖z‖∞ &lt; γ_1 − β</code>.
+       <span class="small">Wall ${wall.toFixed(1)} ms;
+       WASM ${v.verify_ms.toFixed(1)} ms; pk pin
+       <code>${j.ml_dsa_pk_hex.slice(0, 24)}…</code>.</span>
+       <br><span class="small">Fallback target: NTT consistency
+       (v1.7's third in-circuit property) is delegated to Layer 1
+       native ml_dsa::verify in this gate.</span>`
+    : `<span class="fail">v1.5 ML-DSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
+}
+
+// **v1.7 PQ-airtight gate** — v1.5 + in-circuit NTT consistency.
+// Same wire shape as the v1 ML-DSA gate but the server prove + the
+// browser verify both route through the v1.7 trace shape (5 regions:
+// poly-eq + norm-check + 4× chained-NTT).  Server prove ~8 s release
+// (vs ~270 ms v1); browser WASM verify ~1.5–3× longer than v1.5.
+async function verifyIncomeLockedMlDsaV17(ev) {
+  const userId = ev.currentTarget.getAttribute('data-user-id');
+  const out = $('verify-income-result');
+  out.innerHTML = '<span class="small">requesting v1.7 ML-DSA-STARK gate response (server prove ~8 s) …</span>';
+
+  const nonceBytes = new Uint8Array(32);
+  crypto.getRandomValues(nonceBytes);
+  const nonceHex = bytesToHex(nonceBytes);
+
+  let r, j;
+  try {
+    r = await fetch(`/verify/income/ml_dsa_v17/${encodeURIComponent(userId)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nonce_hex: nonceHex }),
+    });
+    j = await r.json();
+  } catch (e) {
+    out.innerHTML = `<span class="fail">network error: ${e}</span>`;
+    return;
+  }
+  if (!r.ok) {
+    out.innerHTML = `<span class="fail">HTTP ${r.status}: ${JSON.stringify(j)}</span>`;
+    return;
+  }
+  if (!j.verified) {
+    out.innerHTML = `<span class="fail">STARK verification failed; v1.7 gate returns nil.</span>`;
+    return;
+  }
+  if (!j.proof_pok_hex || !j.signed_message_hex || !j.sig_hex || !j.ml_dsa_pk_hex) {
+    out.innerHTML = `<span class="fail">Missing v1.7 ML-DSA gate fields.</span>`;
+    return;
+  }
+
+  out.innerHTML = `<span class="small">verifying v1.7 ML-DSA-STARK PoK in WASM
+    (proof ${(j.proof_pok_hex.length / 2 / 1024).toFixed(1)} KiB) …</span>`;
+  const tStart = performance.now();
+  let v;
+  try {
+    v = await window._mmiycVerifyMlDsaSignaturePokV17(
+      j.ml_dsa_pk_hex, j.signed_message_hex, j.sig_hex, j.proof_pok_hex,
+    );
+  } catch (e) {
+    out.innerHTML = `<span class="fail">verify_ml_dsa_signature_pok_v17 threw: ${e}</span>`;
+    return;
+  }
+  const wall = performance.now() - tStart;
+
+  out.innerHTML = v.verified
+    ? `<span class="ok">Service-attested verification ✓ (v1.7 PQ-airtight gate)</span>
+       <br>Income STARK verifies AND the response carries:
+       <ul class="small" style="margin:0.3em 0 0.3em 1.5em;">
+         <li>A real <strong>ML-DSA-44</strong> signature
+             (1,312 B pk, 2,420 B sig, FIPS 204 category 2 PQ).</li>
+         <li>A v1.7 STARK PoK enforcing in-circuit
+             <em>three</em> properties of FIPS 204 §3 Algorithm 3:
+             (a) the polynomial-arithmetic verify equation,
+             (b) the response-polynomial norm bound
+             <code>‖z‖∞ &lt; γ_1 − β</code>, and
+             (c) <strong>NTT consistency</strong>
+             <code>ẑ_l = NTT(z_l)</code> for all
+             <code>l ∈ 0..L=4</code>.</li>
+       </ul>
+       <span class="small">Browser ran <strong>both</strong>
+       checks: native ML-DSA-44 verify (Layer 1, defense in depth)
+       and the v1.7 STIR-based STARK PoK (Layer 2).
+       Wall ${wall.toFixed(1)} ms;
+       WASM ${v.verify_ms.toFixed(1)} ms; pk pin
+       <code>${j.ml_dsa_pk_hex.slice(0, 24)}…</code>.</span>
+       <br><span class="small">v1.7's cryptographic gain over v1.5:
+       Layer 2 now also enforces the NTT chain in-circuit, leaving
+       Layer 1's only remaining responsibility to be the SHAKE
+       rounds + hint check (those become v2's territory).</span>`
+    : `<span class="fail">v1.7 ML-DSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
 }
 
 // Exfiltration demo: an attacker has somehow obtained the

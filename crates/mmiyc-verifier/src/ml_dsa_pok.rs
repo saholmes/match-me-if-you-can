@@ -37,13 +37,32 @@ pub struct MlDsaPokPublicInputs {
     pub c_ntt:        Box<[u32; N]>,
     pub t1d_ntt:      Box<[[u32; N]; K]>,
     pub w_approx_ntt: Box<[[u32; N]; K]>,
+    /// v1.5 (I3) — see prover-side doc.
+    pub pk_bytes:     Option<Vec<u8>>,
+    pub message:      Option<Vec<u8>>,
+    pub sig_bytes:    Option<Vec<u8>>,
 }
 
 /// Identical to the prover's hash; both sides MUST produce the
-/// same digest from the same public inputs.
+/// same digest from the same public inputs.  v1.5 binding format
+/// (see prover-side `compute_pi_hash` doc).
 pub fn compute_pi_hash(pi: &MlDsaPokPublicInputs) -> [u8; 32] {
     let mut h = Sha3_256::new();
-    h.update(b"mmiyc/v1/ml-dsa-pok/public-inputs");
+    let v15 = pi.pk_bytes.is_some() && pi.message.is_some() && pi.sig_bytes.is_some();
+    if v15 {
+        h.update(b"mmiyc/v1.5/ml-dsa-pok/public-inputs");
+        let pk  = pi.pk_bytes.as_ref().unwrap();
+        let msg = pi.message.as_ref().unwrap();
+        let sig = pi.sig_bytes.as_ref().unwrap();
+        h.update(&(pk.len() as u64).to_be_bytes());
+        h.update(pk);
+        h.update(&(msg.len() as u64).to_be_bytes());
+        h.update(msg);
+        h.update(&(sig.len() as u64).to_be_bytes());
+        h.update(sig);
+    } else {
+        h.update(b"mmiyc/v1/ml-dsa-pok/public-inputs");
+    }
     for k in 0..K {
         for l in 0..L {
             for v in pi.a_ntt[k][l].iter() {
@@ -111,8 +130,191 @@ pub fn verify_ml_dsa_signature_pok(
         c_ntt:        pi_prover.c_ntt,
         t1d_ntt:      pi_prover.t1d_ntt,
         w_approx_ntt: pi_prover.w_approx_ntt,
+        pk_bytes:     pi_prover.pk_bytes,
+        message:      pi_prover.message,
+        sig_bytes:    pi_prover.sig_bytes,
     };
     verify_ml_dsa_pok(&pi, proof)
+}
+
+/// **v1.5** verifier — mirror of `prove_ml_dsa_signature_pok_v15`.
+/// Re-derives the AIR's public inputs from `(pk, message, sig)`,
+/// reconstructs `pi_hash` (with the v1.5 binding format including
+/// pk/sig/message bytes), and verifies the FRI proof against
+/// `ml_dsa_verify_air_v15`'s parameter set.
+///
+/// Same Layer-1 + Layer-2 design as v1, with one cryptographic
+/// strengthening: Layer 2 (the STARK) now enforces
+/// `‖z‖∞ < γ_1 − β` in-circuit, so Layer 1 no longer carries that
+/// check.
+pub fn verify_ml_dsa_signature_pok_v15(
+    pk_bytes: &[u8],
+    message: &[u8],
+    sig_bytes: &[u8],
+    proof: &[u8],
+) -> Result<(), AirError> {
+    use deep_ali::ml_dsa_verify_air_v15::VERIFY_AIR_V15_ROWS;
+
+    // Layer 1: native ML-DSA-44 verify (defense in depth).
+    use ml_dsa::{
+        signature::Verifier as _, EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey,
+    };
+    let pk_arr: &EncodedVerifyingKey<MlDsa44> = pk_bytes.try_into()
+        .map_err(|_| AirError::Deserialise(format!(
+            "ml-dsa-44 pk length mismatch: got {}", pk_bytes.len()
+        )))?;
+    let vk = VerifyingKey::<MlDsa44>::decode(pk_arr);
+    let sig = Signature::<MlDsa44>::try_from(sig_bytes)
+        .map_err(|e| AirError::Deserialise(format!("ml-dsa-44 sig decode: {e}")))?;
+    vk.verify(message, &sig)
+        .map_err(|e| AirError::Verify(format!("ml-dsa-44 native verify rejected: {e}")))?;
+
+    // Layer 2: re-derive PI from sig, reconstruct v1.5 pi_hash,
+    // verify FRI proof against the v1.5 trace shape.
+    let (pi_prover, _witness) = mmiyc_prover::ml_dsa_pok::synthesise_from_signature(
+        pk_bytes, message, sig_bytes,
+    ).ok_or_else(|| AirError::Witness(
+        "could not decode pk/signature for ML-DSA-44".into()
+    ))?;
+    let pi = MlDsaPokPublicInputs {
+        a_ntt:        pi_prover.a_ntt,
+        c_ntt:        pi_prover.c_ntt,
+        t1d_ntt:      pi_prover.t1d_ntt,
+        w_approx_ntt: pi_prover.w_approx_ntt,
+        pk_bytes:     pi_prover.pk_bytes,
+        message:      pi_prover.message,
+        sig_bytes:    pi_prover.sig_bytes,
+    };
+
+    let n_trace = VERIFY_AIR_V15_ROWS.next_power_of_two();
+    let n0 = n_trace * BLOWUP;
+
+    let proof_obj = DeepFriProof::<Ext>::deserialize_with_mode(
+        proof, Compress::Yes, Validate::Yes,
+    ).map_err(|e| AirError::Deserialise(format!("{e:?}")))?;
+
+    let pi_hash = compute_pi_hash(&pi);
+    let params = DeepFriParams {
+        schedule: make_schedule(n0),
+        r: NUM_QUERIES,
+        seed_z: SEED_Z,
+        coeff_commit_final: true,
+        d_final: 1,
+        stir: false,
+        s0: NUM_QUERIES,
+        public_inputs_hash: Some(pi_hash),
+    };
+
+    if deep_fri_verify::<Ext>(&params, &proof_obj) {
+        Ok(())
+    } else {
+        Err(AirError::Verify("v1.5 ML-DSA STARK PoK rejected".into()))
+    }
+}
+
+/// **v1.7** verifier — mirror of `prove_ml_dsa_signature_pok_v17`.
+///
+/// Two-layer check identical in form to v1.5: native ML-DSA-44
+/// verify (Layer 1, defense in depth) + STARK PoK over the
+/// `ml_dsa_verify_air_v17` trace shape.  The cryptographic gain over
+/// v1.5 is that the STARK now also enforces `ẑ_l = NTT(z_l)`
+/// in-circuit; Layer 1's only remaining role is the SHAKE rounds +
+/// hint check (those become v2's responsibility).
+pub fn verify_ml_dsa_signature_pok_v17(
+    pk_bytes: &[u8],
+    message: &[u8],
+    sig_bytes: &[u8],
+    proof: &[u8],
+) -> Result<(), AirError> {
+    use deep_ali::ml_dsa_verify_air_v17::VERIFY_AIR_V17_ACTIVE_ROWS;
+
+    // Layer 1: native ML-DSA-44 verify (defense in depth).
+    use ml_dsa::{
+        signature::Verifier as _, EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey,
+    };
+    let pk_arr: &EncodedVerifyingKey<MlDsa44> = pk_bytes.try_into()
+        .map_err(|_| AirError::Deserialise(format!(
+            "ml-dsa-44 pk length mismatch: got {}", pk_bytes.len()
+        )))?;
+    let vk = VerifyingKey::<MlDsa44>::decode(pk_arr);
+    let sig = Signature::<MlDsa44>::try_from(sig_bytes)
+        .map_err(|e| AirError::Deserialise(format!("ml-dsa-44 sig decode: {e}")))?;
+    vk.verify(message, &sig)
+        .map_err(|e| AirError::Verify(format!("ml-dsa-44 native verify rejected: {e}")))?;
+
+    // Layer 2: re-derive PI, reconstruct v1.7 pi_hash, verify FRI
+    // proof against the v1.7 trace shape.
+    let (pi_prover, _witness) = mmiyc_prover::ml_dsa_pok::synthesise_from_signature(
+        pk_bytes, message, sig_bytes,
+    ).ok_or_else(|| AirError::Witness(
+        "v1.7: could not decode pk/signature for ML-DSA-44".into()
+    ))?;
+    let pi = MlDsaPokPublicInputs {
+        a_ntt:        pi_prover.a_ntt,
+        c_ntt:        pi_prover.c_ntt,
+        t1d_ntt:      pi_prover.t1d_ntt,
+        w_approx_ntt: pi_prover.w_approx_ntt,
+        pk_bytes:     pi_prover.pk_bytes,
+        message:      pi_prover.message,
+        sig_bytes:    pi_prover.sig_bytes,
+    };
+
+    let n_trace = VERIFY_AIR_V17_ACTIVE_ROWS.next_power_of_two();
+    let n0 = n_trace * BLOWUP;
+
+    let proof_obj = DeepFriProof::<Ext>::deserialize_with_mode(
+        proof, Compress::Yes, Validate::Yes,
+    ).map_err(|e| AirError::Deserialise(format!("{e:?}")))?;
+
+    let pi_hash = compute_pi_hash_v17(&pi);
+    let params = DeepFriParams {
+        schedule: make_schedule(n0),
+        r: NUM_QUERIES,
+        seed_z: SEED_Z,
+        coeff_commit_final: true,
+        d_final: 1,
+        stir: false,
+        s0: NUM_QUERIES,
+        public_inputs_hash: Some(pi_hash),
+    };
+
+    if deep_fri_verify::<Ext>(&params, &proof_obj) {
+        Ok(())
+    } else {
+        Err(AirError::Verify("v1.7 ML-DSA STARK PoK rejected".into()))
+    }
+}
+
+/// **v1.7** pi_hash mirror.  Mirror of the prover's
+/// `compute_pi_hash_v17` — different domain-separation tag from v1.5
+/// so the two protocol versions can't be confused.
+pub fn compute_pi_hash_v17(pi: &MlDsaPokPublicInputs) -> [u8; 32] {
+    let mut h = Sha3_256::new();
+    h.update(b"mmiyc/v1.7/ml-dsa-pok/public-inputs");
+    let pk  = pi.pk_bytes.as_ref().expect("v1.7 requires pk_bytes");
+    let msg = pi.message.as_ref().expect("v1.7 requires message");
+    let sig = pi.sig_bytes.as_ref().expect("v1.7 requires sig_bytes");
+    h.update(&(pk.len() as u64).to_be_bytes());
+    h.update(pk);
+    h.update(&(msg.len() as u64).to_be_bytes());
+    h.update(msg);
+    h.update(&(sig.len() as u64).to_be_bytes());
+    h.update(sig);
+    for k in 0..K {
+        for l in 0..L {
+            for v in pi.a_ntt[k][l].iter() {
+                h.update(v.to_be_bytes());
+            }
+        }
+    }
+    for v in pi.c_ntt.iter() { h.update(v.to_be_bytes()); }
+    for k in 0..K {
+        for v in pi.t1d_ntt[k].iter() { h.update(v.to_be_bytes()); }
+    }
+    for k in 0..K {
+        for v in pi.w_approx_ntt[k].iter() { h.update(v.to_be_bytes()); }
+    }
+    h.finalize().into()
 }
 
 /// Verify an ML-DSA STARK PoK proof against the supplied public inputs.
@@ -189,7 +391,10 @@ mod tests {
                 w_approx_ntt[k][i] = sub_q(acc, ct1d);
             }
         }
-        let pi = MlDsaPokPublicInputs { a_ntt, c_ntt, t1d_ntt, w_approx_ntt };
+        let pi = MlDsaPokPublicInputs {
+            a_ntt, c_ntt, t1d_ntt, w_approx_ntt,
+            pk_bytes: None, message: None, sig_bytes: None,
+        };
         let witness = mmiyc_prover::ml_dsa_pok::MlDsaPokWitness { z_ntt };
         (pi, witness)
     }
@@ -200,6 +405,9 @@ mod tests {
             c_ntt:        pi.c_ntt.clone(),
             t1d_ntt:      pi.t1d_ntt.clone(),
             w_approx_ntt: pi.w_approx_ntt.clone(),
+            pk_bytes:     pi.pk_bytes.clone(),
+            message:      pi.message.clone(),
+            sig_bytes:    pi.sig_bytes.clone(),
         }
     }
 
@@ -225,6 +433,9 @@ mod tests {
             c_ntt:        pi.c_ntt,
             t1d_ntt:      pi.t1d_ntt,
             w_approx_ntt: pi.w_approx_ntt,
+            pk_bytes:     pi.pk_bytes,
+            message:      pi.message,
+            sig_bytes:    pi.sig_bytes,
         };
         tampered.c_ntt[0] = (tampered.c_ntt[0] + 1) % Q;
         assert!(verify_ml_dsa_pok(&tampered, &proof).is_err(),
@@ -261,6 +472,63 @@ mod tests {
 
         verify_ml_dsa_signature_pok(&pk_bytes, message, &sig_bytes, &proof)
             .expect("verify must accept the prover's own STARK PoK over the real signature");
+    }
+
+    #[test]
+    fn round_trip_v15_real_ml_dsa_signature() {
+        let message: &[u8] = b"mmiyc/v1.5/ml-dsa-pok-real-signature-test";
+        let (pk_bytes, sig_bytes) = fresh_real_signature_bytes(message);
+
+        let proof = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok_v15(
+            &pk_bytes, message, &sig_bytes,
+        ).expect("v1.5 prove must succeed for a valid signature");
+
+        verify_ml_dsa_signature_pok_v15(&pk_bytes, message, &sig_bytes, &proof)
+            .expect("v1.5 verify must accept the prover's own STARK PoK");
+    }
+
+    /// v1.7 round-trip: real ML-DSA-44 keygen + sign + STARK prove
+    /// (with NTT-consistency region) + verify.  Exercises the full
+    /// v1.7 trace shape (~6,148 active rows × 323 cols) end-to-end.
+    /// Marked `ignore` by default because it takes ~10–60 s in
+    /// debug; run with `cargo test --release -p mmiyc-verifier
+    /// round_trip_v17 -- --include-ignored`.
+    #[test]
+    #[ignore]
+    fn round_trip_v17_real_ml_dsa_signature() {
+        let message: &[u8] = b"mmiyc/v1.7/ml-dsa-pok-real-signature-test";
+        let (pk_bytes, sig_bytes) = fresh_real_signature_bytes(message);
+
+        let proof = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok_v17(
+            &pk_bytes, message, &sig_bytes,
+        ).expect("v1.7 prove must succeed for a valid signature");
+
+        verify_ml_dsa_signature_pok_v17(&pk_bytes, message, &sig_bytes, &proof)
+            .expect("v1.7 verify must accept the prover's own STARK PoK");
+    }
+
+    /// v1.7 vs v1.5 isolation: a proof produced by v1.7's prover
+    /// must NOT verify under v1.5's verifier (different domain tag
+    /// in pi_hash → Fiat-Shamir mismatch → rejection).  This guards
+    /// against accidental protocol-version downgrade.
+    #[test]
+    #[ignore]
+    fn v17_proof_rejected_by_v15_verifier() {
+        let message: &[u8] = b"mmiyc/v1.7-vs-v1.5-isolation-test";
+        let (pk_bytes, sig_bytes) = fresh_real_signature_bytes(message);
+
+        let proof_v17 = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok_v17(
+            &pk_bytes, message, &sig_bytes,
+        ).expect("v1.7 prove must succeed");
+
+        // v1.5 verifier sees a proof under a different protocol tag —
+        // pi_hash binds different bytes, so the FRI verifier rejects.
+        // (Layer 1 native verify still passes, but Layer 2 should fail.)
+        let res = verify_ml_dsa_signature_pok_v15(
+            &pk_bytes, message, &sig_bytes, &proof_v17,
+        );
+        assert!(res.is_err(),
+            "v1.7 proof must NOT verify under the v1.5 verifier (protocol-version isolation)");
     }
 
     #[test]

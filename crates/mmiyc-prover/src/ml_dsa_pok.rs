@@ -47,14 +47,30 @@ const NUM_QUERIES: usize = 54;
 const SEED_Z: u64 = 0xDEEF_BAAD;
 
 /// Public inputs to the ML-DSA-STARK PoK.  These are the values
-/// the verifier deterministically reconstructs (in the next-session
-/// version, from `(pk, signature)`); the AIR's
+/// the verifier deterministically reconstructs from
+/// `(pk_bytes, message, sig_bytes)`; the AIR's
 /// `public_inputs_hash` binds the proof to them.
+///
+/// **v1.5 (I3) — pk/sig/message preserved alongside the NTT
+/// domain inputs.**  The hash binds the proof not only to the
+/// derived NTT values but also to the source bytes that produced
+/// them.  This closes a "deterministic re-derivation is not a
+/// cryptographic binding" gap from v1.
 pub struct MlDsaPokPublicInputs {
     pub a_ntt:        Box<[[[u32; N]; L]; K]>,   // matrix Â
     pub c_ntt:        Box<[u32; N]>,
     pub t1d_ntt:      Box<[[u32; N]; K]>,
     pub w_approx_ntt: Box<[[u32; N]; K]>,
+    /// FIPS 204 ML-DSA-44 encoded verifying key (1 312 B).  When
+    /// `Some`, included in `compute_pi_hash` (v1.5+).  `None` for
+    /// the legacy synthetic-from-nonce path.
+    pub pk_bytes:     Option<Vec<u8>>,
+    /// Message that was signed.  Same Some/None convention as
+    /// `pk_bytes`.
+    pub message:      Option<Vec<u8>>,
+    /// FIPS 204 ML-DSA-44 encoded signature (2 420 B).  Same
+    /// Some/None convention.
+    pub sig_bytes:    Option<Vec<u8>>,
 }
 
 /// Witness: response polynomial in NTT domain.
@@ -79,7 +95,7 @@ pub struct MlDsaPokWitness {
 /// of `pk_bytes`, `message`, `sig_bytes`).
 pub fn synthesise_from_signature(
     pk_bytes: &[u8],
-    _message: &[u8],
+    message: &[u8],
     sig_bytes: &[u8],
 ) -> Option<(MlDsaPokPublicInputs, MlDsaPokWitness)> {
     use deep_ali::ml_dsa_codec::{decode_pk, decode_signature, expand_a, t1_times_2d};
@@ -132,9 +148,216 @@ pub fn synthesise_from_signature(
         c_ntt,
         t1d_ntt,
         w_approx_ntt,
+        // v1.5: bind the source bytes into pi_hash.  Closes the
+        // "deterministic re-derivation" gap from v1 — an adversary
+        // who tampered with (pk, sig, message) would compute a
+        // different pi_hash, and the FRI verifier would reject.
+        pk_bytes:  Some(pk_bytes.to_vec()),
+        message:   Some(message.to_vec()),
+        sig_bytes: Some(sig_bytes.to_vec()),
     };
     let witness = MlDsaPokWitness { z_ntt };
     Some((pi, witness))
+}
+
+/// **v1.5** — produce a STARK PoK that proves the polynomial-arithmetic
+/// core AND the `‖z‖∞ < γ_1 − β` norm bound on the response polynomial.
+/// Compared to [`prove_ml_dsa_signature_pok`] (v1), this version
+/// adds the in-circuit norm check, removing the bound-check
+/// dependency on Layer-1 native verify.
+///
+/// Returns the serialized FRI proof bytes.  Verifier-side mirror
+/// is `mmiyc_verifier::ml_dsa_pok::verify_ml_dsa_signature_pok_v15`.
+pub fn prove_ml_dsa_signature_pok_v15(
+    pk_bytes: &[u8],
+    message: &[u8],
+    sig_bytes: &[u8],
+) -> Result<Vec<u8>, AirError> {
+    use deep_ali::ml_dsa_codec::decode_signature;
+    use deep_ali::ml_dsa_verify_air_v15::{
+        self as v15, VERIFY_AIR_V15_ROWS, WIDTH as V15_WIDTH,
+    };
+    use ark_poly::{EvaluationDomain, GeneralEvaluationDomain};
+
+    let (pi, witness) = synthesise_from_signature(pk_bytes, message, sig_bytes)
+        .ok_or_else(|| AirError::Witness(
+            "could not decode pk/signature for ML-DSA-44".into()
+        ))?;
+
+    // Decode the cleartext z polynomials (needed for the norm-check region).
+    let (_c_tilde, z_cleartext, _h) = decode_signature(sig_bytes)
+        .ok_or_else(|| AirError::Witness(
+            "could not decode signature for v1.5 norm-check region".into()
+        ))?;
+
+    let n_trace = VERIFY_AIR_V15_ROWS.next_power_of_two();
+    let n0 = n_trace * BLOWUP;
+    let domain = FriDomain::new_radix2(n0);
+
+    let mut trace: Vec<Vec<F>> = (0..V15_WIDTH)
+        .map(|_| vec![F::zero(); n_trace])
+        .collect();
+    v15::fill_trace(
+        &mut trace, n_trace,
+        &pi.a_ntt, &witness.z_ntt, &pi.c_ntt, &pi.t1d_ntt, &pi.w_approx_ntt,
+        &z_cleartext,
+    );
+
+    let lde = lde_trace_columns(&trace, n_trace, BLOWUP)
+        .map_err(|e| AirError::Internal(format!("LDE failed: {e:?}")))?;
+
+    let n_constraints = v15::NUM_CONSTRAINTS;
+    let coeffs = comb_coeffs(n_constraints);
+
+    // Compose Φ̃ with v1.5's eval_per_row.
+    let n = lde[0].len();
+    let blowup_local = n / n_trace;
+    let mut phi = vec![F::zero(); n];
+    for i in 0..n {
+        let cur: Vec<F> = (0..lde.len()).map(|c| lde[c][i]).collect();
+        let nxt_idx = (i + blowup_local) % n;
+        let nxt: Vec<F> = (0..lde.len()).map(|c| lde[c][nxt_idx]).collect();
+        let trace_row = i / blowup_local;
+        let cvals = v15::eval_per_row(&cur, &nxt, trace_row);
+        let mut acc = F::zero();
+        for j in 0..n_constraints { acc += coeffs[j] * cvals[j]; }
+        phi[i] = acc;
+    }
+    let evdom = GeneralEvaluationDomain::<F>::new(n).expect("power-of-two domain");
+    let phi_coeffs = evdom.ifft(&phi);
+    let c_coeffs = poly_div_zh_local(&phi_coeffs, n_trace);
+    let mut padded = c_coeffs;
+    padded.resize(n, F::zero());
+    let c_eval = evdom.fft(&padded);
+
+    // v1.5 pi_hash: same compute_pi_hash binding (already includes
+    // pk/sig/message via I3).  Kept as the public-input commitment.
+    let pi_hash = compute_pi_hash(&pi);
+    let params = DeepFriParams {
+        schedule: make_schedule(n0),
+        r: NUM_QUERIES,
+        seed_z: SEED_Z,
+        coeff_commit_final: true,
+        d_final: 1,
+        stir: false,
+        s0: NUM_QUERIES,
+        public_inputs_hash: Some(pi_hash),
+    };
+
+    let proof = deep_fri_prove::<Ext>(c_eval, domain, &params);
+    let size = deep_fri_proof_size_bytes::<Ext>(&proof, params.stir);
+    let mut blob = Vec::with_capacity(size);
+    proof.serialize_with_mode(&mut blob, Compress::Yes)
+        .map_err(|e| AirError::Internal(format!("serialize failed: {e:?}")))?;
+    Ok(blob)
+}
+
+/// **v1.7** — produce a STARK PoK that adds the in-circuit NTT
+/// consistency check (`ẑ_l = NTT(z_l)` for all `l ∈ 0..L`) on top
+/// of v1.5's polynomial-arithmetic core + norm bound.  After this,
+/// Layer-1 native `ml_dsa::verify` is the only thing still enforcing
+/// the SHAKE-derived parts (ExpandA from ρ, c̃ = H(...), SampleInBall,
+/// hint check). Removing those is v2.
+///
+/// Returns the serialized FRI proof bytes.  Verifier-side mirror is
+/// `mmiyc_verifier::ml_dsa_pok::verify_ml_dsa_signature_pok_v17`.
+pub fn prove_ml_dsa_signature_pok_v17(
+    pk_bytes: &[u8],
+    message: &[u8],
+    sig_bytes: &[u8],
+) -> Result<Vec<u8>, AirError> {
+    use deep_ali::{
+        deep_ali_merge_ml_dsa_v17,
+        ml_dsa_codec::decode_signature,
+        ml_dsa_verify_air_v17::{
+            VERIFY_AIR_V17_ACTIVE_ROWS, WIDTH as V17_WIDTH, NUM_CONSTRAINTS as V17_K,
+            self as v17,
+        },
+    };
+
+    let (pi, witness) = synthesise_from_signature(pk_bytes, message, sig_bytes)
+        .ok_or_else(|| AirError::Witness(
+            "v1.7: could not decode pk/signature for ML-DSA-44".into()
+        ))?;
+
+    let (_c_tilde, z_cleartext, _h) = decode_signature(sig_bytes)
+        .ok_or_else(|| AirError::Witness(
+            "v1.7: could not decode signature for cleartext z (Region B + C inputs)".into()
+        ))?;
+
+    let n_trace = VERIFY_AIR_V17_ACTIVE_ROWS.next_power_of_two();
+    let n0 = n_trace * BLOWUP;
+    let domain = FriDomain::new_radix2(n0);
+
+    let mut trace: Vec<Vec<F>> = (0..V17_WIDTH)
+        .map(|_| vec![F::zero(); n_trace])
+        .collect();
+    v17::fill_trace(
+        &mut trace, n_trace,
+        &pi.a_ntt, &witness.z_ntt, &pi.c_ntt, &pi.t1d_ntt, &pi.w_approx_ntt,
+        &z_cleartext,
+    );
+
+    let lde = lde_trace_columns(&trace, n_trace, BLOWUP)
+        .map_err(|e| AirError::Internal(format!("v1.7 LDE failed: {e:?}")))?;
+
+    let coeffs = comb_coeffs(V17_K);
+    let omega_unused = F::zero();  // deep_ali_merge_ml_dsa_v17 ignores `omega`.
+    let (c_eval, _info) = deep_ali_merge_ml_dsa_v17(
+        &lde, &coeffs, omega_unused, n_trace, BLOWUP,
+    );
+    drop(lde);
+
+    let pi_hash = compute_pi_hash_v17(&pi);
+    let params = DeepFriParams {
+        schedule: make_schedule(n0),
+        r: NUM_QUERIES,
+        seed_z: SEED_Z,
+        coeff_commit_final: true,
+        d_final: 1,
+        stir: false,
+        s0: NUM_QUERIES,
+        public_inputs_hash: Some(pi_hash),
+    };
+
+    let proof = deep_fri_prove::<Ext>(c_eval, domain, &params);
+    let size = deep_fri_proof_size_bytes::<Ext>(&proof, params.stir);
+    let mut blob = Vec::with_capacity(size);
+    proof.serialize_with_mode(&mut blob, Compress::Yes)
+        .map_err(|e| AirError::Internal(format!("v1.7 serialize failed: {e:?}")))?;
+    Ok(blob)
+}
+
+/// **v1.7** pi_hash binding.  Same content as v1.5 (same public
+/// inputs) but with a different domain-separation tag so v1.5 and
+/// v1.7 proofs are cleanly non-interchangeable.
+pub fn compute_pi_hash_v17(pi: &MlDsaPokPublicInputs) -> [u8; 32] {
+    let mut h = Sha3_256::new();
+    h.update(b"mmiyc/v1.7/ml-dsa-pok/public-inputs");
+    let pk  = pi.pk_bytes.as_ref().expect("v1.7 requires pk_bytes");
+    let msg = pi.message.as_ref().expect("v1.7 requires message");
+    let sig = pi.sig_bytes.as_ref().expect("v1.7 requires sig_bytes");
+    h.update(&(pk.len() as u64).to_be_bytes());
+    h.update(pk);
+    h.update(&(msg.len() as u64).to_be_bytes());
+    h.update(msg);
+    h.update(&(sig.len() as u64).to_be_bytes());
+    h.update(sig);
+    for k in 0..K {
+        for l in 0..L {
+            for v in pi.a_ntt[k][l].iter() {
+                h.update(v.to_be_bytes());
+            }
+        }
+    }
+    for v in pi.c_ntt.iter() { h.update(v.to_be_bytes()); }
+    for k in 0..K {
+        for v in pi.t1d_ntt[k].iter() { h.update(v.to_be_bytes()); }
+    }
+    for k in 0..K {
+        for v in pi.w_approx_ntt[k].iter() { h.update(v.to_be_bytes()); }
+    }
+    h.finalize().into()
 }
 
 /// Convenience: produce a STARK PoK over the public inputs derived
@@ -218,7 +441,10 @@ pub fn synthesise_from_nonce(nonce: &[u8; 32]) -> (MlDsaPokPublicInputs, MlDsaPo
         }
     }
 
-    let pi = MlDsaPokPublicInputs { a_ntt, c_ntt, t1d_ntt, w_approx_ntt };
+    let pi = MlDsaPokPublicInputs {
+        a_ntt, c_ntt, t1d_ntt, w_approx_ntt,
+        pk_bytes: None, message: None, sig_bytes: None,
+    };
     let witness = MlDsaPokWitness { z_ntt };
     (pi, witness)
 }
@@ -227,9 +453,31 @@ pub fn synthesise_from_nonce(nonce: &[u8; 32]) -> (MlDsaPokPublicInputs, MlDsaPo
 /// `public_inputs_hash` that `deep_fri_prove` and `deep_fri_verify`
 /// both bind to.  Domain-separated; both prover and verifier
 /// reconstruct exactly this digest from the same public inputs.
+///
+/// **v1.5 binding format**: when `pk_bytes`, `message`, `sig_bytes`
+/// are all `Some(...)`, the hash uses the v1.5 domain tag and
+/// includes the source bytes alongside the derived NTT values.
+/// When any is `None`, falls back to the v1 binding (legacy
+/// synthetic-from-nonce path).  Both prover and verifier MUST
+/// agree on which path; mismatched bindings produce different
+/// `pi_hash` values and the FRI verifier rejects.
 pub fn compute_pi_hash(pi: &MlDsaPokPublicInputs) -> [u8; 32] {
     let mut h = Sha3_256::new();
-    h.update(b"mmiyc/v1/ml-dsa-pok/public-inputs");
+    let v15 = pi.pk_bytes.is_some() && pi.message.is_some() && pi.sig_bytes.is_some();
+    if v15 {
+        h.update(b"mmiyc/v1.5/ml-dsa-pok/public-inputs");
+        let pk  = pi.pk_bytes.as_ref().unwrap();
+        let msg = pi.message.as_ref().unwrap();
+        let sig = pi.sig_bytes.as_ref().unwrap();
+        h.update(&(pk.len() as u64).to_be_bytes());
+        h.update(pk);
+        h.update(&(msg.len() as u64).to_be_bytes());
+        h.update(msg);
+        h.update(&(sig.len() as u64).to_be_bytes());
+        h.update(sig);
+    } else {
+        h.update(b"mmiyc/v1/ml-dsa-pok/public-inputs");
+    }
     for k in 0..K {
         for l in 0..L {
             for v in pi.a_ntt[k][l].iter() {
@@ -423,7 +671,10 @@ mod tests {
             }
         }
 
-        let pi = MlDsaPokPublicInputs { a_ntt, c_ntt, t1d_ntt, w_approx_ntt };
+        let pi = MlDsaPokPublicInputs {
+            a_ntt, c_ntt, t1d_ntt, w_approx_ntt,
+            pk_bytes: None, message: None, sig_bytes: None,
+        };
         let witness = MlDsaPokWitness { z_ntt };
         (pi, witness)
     }

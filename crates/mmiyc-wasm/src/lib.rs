@@ -289,6 +289,65 @@ pub fn verify_ml_dsa_signature_pok_in_browser(
         .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
 }
 
+/// **v1.5** browser verifier — same signature shape as v1, but
+/// routes through `verify_ml_dsa_signature_pok_v15` so the STARK's
+/// in-circuit norm-bound region is checked.  Kept as a fallback
+/// option alongside v1 and v1.7.
+#[wasm_bindgen]
+pub fn verify_ml_dsa_signature_pok_v15_in_browser(
+    pk_hex: String,
+    message_hex: String,
+    sig_hex: String,
+    proof_hex: String,
+) -> Result<JsValue, JsValue> {
+    let pk      = hex_to_bytes(&pk_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: pk_hex"))?;
+    let message = hex_to_bytes(&message_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: message_hex"))?;
+    let sig     = hex_to_bytes(&sig_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: sig_hex"))?;
+    let proof   = hex_to_bytes(&proof_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: proof_hex"))?;
+
+    let t0 = web_sys_now();
+    let verified = mmiyc_verifier::ml_dsa_pok::verify_ml_dsa_signature_pok_v15(
+        &pk, &message, &sig, &proof,
+    ).is_ok();
+    let verify_ms = web_sys_now() - t0;
+
+    serde_wasm_bindgen::to_value(&VerifyResult { verified, verify_ms })
+        .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
+/// **v1.7** browser verifier — same signature shape as v1, but
+/// routes through `verify_ml_dsa_signature_pok_v17` so the STARK's
+/// in-circuit NTT-consistency region is checked.
+#[wasm_bindgen]
+pub fn verify_ml_dsa_signature_pok_v17_in_browser(
+    pk_hex: String,
+    message_hex: String,
+    sig_hex: String,
+    proof_hex: String,
+) -> Result<JsValue, JsValue> {
+    let pk      = hex_to_bytes(&pk_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: pk_hex"))?;
+    let message = hex_to_bytes(&message_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: message_hex"))?;
+    let sig     = hex_to_bytes(&sig_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: sig_hex"))?;
+    let proof   = hex_to_bytes(&proof_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: proof_hex"))?;
+
+    let t0 = web_sys_now();
+    let verified = mmiyc_verifier::ml_dsa_pok::verify_ml_dsa_signature_pok_v17(
+        &pk, &message, &sig, &proof,
+    ).is_ok();
+    let verify_ms = web_sys_now() - t0;
+
+    serde_wasm_bindgen::to_value(&VerifyResult { verified, verify_ms })
+        .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
 /// Verify an ML-DSA-STARK PoK in the browser.  The public inputs
 /// are derived deterministically from `nonce_hex` (must match the
 /// server's same derivation) — see `mmiyc_prover::ml_dsa_pok`'s
@@ -319,6 +378,9 @@ pub fn verify_ml_dsa_pok_in_browser(
         c_ntt:        pi_prover.c_ntt,
         t1d_ntt:      pi_prover.t1d_ntt,
         w_approx_ntt: pi_prover.w_approx_ntt,
+        pk_bytes:     None,
+        message:      None,
+        sig_bytes:    None,
     };
 
     let t0 = web_sys_now();
