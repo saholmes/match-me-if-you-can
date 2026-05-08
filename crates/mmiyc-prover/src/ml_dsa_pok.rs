@@ -43,9 +43,9 @@ use sha3::{Digest as _, Sha3_256};
 type Ext = SexticExt;
 
 const BLOWUP: usize = 32;
-// NIST PQ Level 3 (Johnson-regime unconditional): 79 × 2.5 ≥ 192 bits.
-// See `feedback_stir_johnson_unconditional_only.md`.
-const NUM_QUERIES: usize = 79;
+// Auto-derived from deep_ali's active `sha3-N` feature: 54 / 79 / 105
+// for NIST PQ Levels 1 / 3 / 5 (Johnson-regime unconditional).
+const NUM_QUERIES: usize = deep_ali::stark_level::NUM_QUERIES_LEVEL;
 const SEED_Z: u64 = 0xDEEF_BAAD;
 
 /// Public inputs to the ML-DSA-STARK PoK.  These are the values

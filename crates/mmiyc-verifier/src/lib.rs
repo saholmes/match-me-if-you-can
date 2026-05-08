@@ -23,8 +23,9 @@ type Ext = SexticExt;
 
 /// Pipeline calibration constants — must match `mmiyc-prover`.
 const BLOWUP: usize = 32;
-/// NIST PQ Level 3 (Johnson-regime unconditional): 79 × 2.5 = 197.5 ≥ 192 bits.
-const NUM_QUERIES: usize = 79;
+/// Auto-derived from deep_ali's active `sha3-N` feature.  See
+/// `deep_ali::stark_level::NUM_QUERIES_LEVEL`.
+const NUM_QUERIES: usize = deep_ali::stark_level::NUM_QUERIES_LEVEL;
 const SEED_Z: u64 = 0xDEEF_BAAD;
 const N_TRACE_AGE: usize = 32;
 const N_TRACE_MERKLE: usize = 512;
