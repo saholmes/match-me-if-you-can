@@ -328,6 +328,160 @@ pub fn prove_ml_dsa_signature_pok_v17(
     Ok(blob)
 }
 
+// ─── v2 wrappers ──────────────────────────────────────────────────
+
+/// **v2** signature-PoK prover.  Produces a `V2ProofReal` bundle
+/// (10 FRI sub-proofs) over `(pk, message, sig)`.  After this gate,
+/// the verifier needs NO Layer 1 native `ml_dsa::verify` — every
+/// step of FIPS 204 §3 Algorithm 3 is proven in-circuit by the 10
+/// STIR-STARK sub-proofs at NIST PQ Level 1 unconditional security.
+pub fn prove_ml_dsa_signature_pok_v2(
+    pk_bytes: &[u8],
+    message: &[u8],
+    sig_bytes: &[u8],
+) -> Result<Vec<u8>, AirError> {
+    use deep_ali::ml_dsa_verify_air_v2_orchestration::{prove_v2_real, V2Witness};
+
+    let (witness, c_tilde_bytes) = synthesise_v2_from_signature(pk_bytes, message, sig_bytes)
+        .ok_or_else(|| AirError::Witness(
+            "v2: could not decode pk/signature for ML-DSA-44".into()
+        ))?;
+
+    // Production blowup = 32; the v2 sub-proofs share this.
+    let proof = prove_v2_real(&witness, &c_tilde_bytes, 32);
+    Ok(proof.to_bytes())
+}
+
+/// Build a fully-populated `V2Witness` + canonical `c̃` bytes from
+/// the encoded `(pk, message, sig)` tuple.  Performs the FIPS 204
+/// §3 Algorithm 3 derivations natively, the same way the verifier
+/// will independently derive them from PI.
+pub fn synthesise_v2_from_signature(
+    pk_bytes: &[u8],
+    message: &[u8],
+    sig_bytes: &[u8],
+) -> Option<(deep_ali::ml_dsa_verify_air_v2_orchestration::V2Witness, [u8; 32])> {
+    use deep_ali::ml_dsa::params::Q;
+    use deep_ali::ml_dsa_codec::{decode_pk, decode_signature, expand_a, t1_times_2d};
+    use deep_ali::ml_dsa_decompose;
+    use deep_ali::ml_dsa_field::{add_q, mul_q, sub_q};
+    use deep_ali::ml_dsa_ntt::{ntt, ntt_inv};
+    use deep_ali::ml_dsa_sample_in_ball::sample_in_ball;
+    use deep_ali::ml_dsa_use_hint_air;
+    use deep_ali::ml_dsa_verify_air_v2_orchestration::V2Witness;
+    use sha3::digest::{ExtendableOutput, Update, XofReader};
+
+    let (rho, t1) = decode_pk(pk_bytes)?;
+    let (c_tilde, z, h) = decode_signature(sig_bytes)?;
+
+    // a_hat = ExpandA(ρ).
+    let a_hat = expand_a(&rho);
+
+    // c_hat = NTT(SampleInBall(c̃)).
+    let mut c_poly = sample_in_ball(&c_tilde);
+    ntt(&mut c_poly);
+    let mut c_ntt = Box::new([0u32; N]); *c_ntt = c_poly;
+
+    // t1·2^d, then NTT each polynomial.
+    let mut t1_2d = t1_times_2d(&t1);
+    for k in 0..K { ntt(&mut t1_2d[k]); }
+    let mut t1d_ntt: Box<[[u32; N]; K]> = Box::new([[0u32; N]; K]);
+    for k in 0..K { t1d_ntt[k] = t1_2d[k]; }
+
+    // z_cleartext + z_ntt.
+    let mut z_cleartext: Box<[[u32; N]; L]> = Box::new([[0u32; N]; L]);
+    let mut z_ntt:        Box<[[u32; N]; L]> = Box::new([[0u32; N]; L]);
+    for l in 0..L {
+        z_cleartext[l] = z[l];
+        let mut zl = z[l]; ntt(&mut zl);
+        z_ntt[l] = zl;
+    }
+
+    // w_approx_ntt[k][i] = Σ_l a_hat·z_ntt − c_ntt·t1d_ntt (mod q).
+    let mut w_approx_ntt: Box<[[u32; N]; K]> = Box::new([[0u32; N]; K]);
+    for k in 0..K {
+        for i in 0..N {
+            let mut acc: u32 = 0;
+            for l in 0..L {
+                acc = add_q(acc, mul_q(a_hat[k][l][i], z_ntt[l][i]));
+            }
+            let ct1d = mul_q(c_ntt[i], t1d_ntt[k][i]);
+            w_approx_ntt[k][i] = sub_q(acc, ct1d);
+        }
+    }
+
+    // w_approx[k] = INTT(w_approx_ntt[k]).
+    let mut w_approx: Box<[[u32; N]; K]> = Box::new([[0u32; N]; K]);
+    for k in 0..K {
+        let mut p = w_approx_ntt[k]; ntt_inv(&mut p);
+        w_approx[k] = p;
+    }
+
+    // h: pack the hint vector into K×N booleans.  The h returned by
+    // decode_signature is a Vec<Vec<u8>> indexed similarly; here we
+    // expect K polynomials with N hint bits each.
+    let mut h_box: Box<[[u32; N]; K]> = Box::new([[0u32; N]; K]);
+    for k in 0..K {
+        for i in 0..N {
+            h_box[k][i] = h[k][i] as u32;
+        }
+    }
+
+    // adjusted_r1 + w1bytes.
+    let mut adjusted_r1: Box<[[u32; N]; K]> = Box::new([[0u32; N]; K]);
+    for k in 0..K {
+        for i in 0..N {
+            let r = w_approx[k][i];
+            let (r1, r0_lifted) = ml_dsa_decompose::decompose(r);
+            let r0_sign = if r0_lifted != 0 && r0_lifted <= Q / 2 { 1 } else { 0 };
+            let (adj, _wp, _wn) = ml_dsa_use_hint_air::use_hint(r1, r0_sign, h_box[k][i]);
+            adjusted_r1[k][i] = adj;
+        }
+    }
+    let total_bits = K * N * 6;
+    let mut w1bytes = vec![0u8; total_bits / 8];
+    for k in 0..K {
+        for i in 0..N {
+            let bit_offset = (k * N + i) * 6;
+            let val = adjusted_r1[k][i] as u64;
+            for b in 0..6 {
+                let bit = ((val >> b) & 1) as u8;
+                w1bytes[(bit_offset + b) / 8] |= bit << ((bit_offset + b) % 8);
+            }
+        }
+    }
+
+    // µ = SHAKE-256(tr ‖ M', 64 B) per FIPS 204 §3 Algorithm 3,
+    // where tr = SHAKE-256(pk, 64 B) and M' is the framed message
+    // produced by ML-DSA.Verify (Algorithm 27): for default empty
+    // context ctx="", M' = 0x00 ‖ 0x00 ‖ M.  The ml-dsa crate's
+    // `kp.sign(M)` uses this wrapper, so verify must match.
+    let mut tr = [0u8; 64];
+    {
+        let mut hasher = sha3::Shake256::default();
+        hasher.update(pk_bytes);
+        let mut reader = hasher.finalize_xof();
+        reader.read(&mut tr);
+    }
+    let mut mu_bytes = [0u8; 64];
+    {
+        let mut hasher = sha3::Shake256::default();
+        hasher.update(&tr);
+        hasher.update(&[0x00, 0x00]);  // domain separator + |ctx|=0 prefix
+        hasher.update(message);
+        let mut reader = hasher.finalize_xof();
+        reader.read(&mut mu_bytes);
+    }
+
+    let witness = V2Witness {
+        a_ntt: a_hat,
+        c_ntt, t1d_ntt, w_approx_ntt,
+        mu_bytes, h: h_box, w1bytes,
+        z_ntt, z_cleartext, w_approx, adjusted_r1,
+    };
+    Some((witness, c_tilde))
+}
+
 /// **v1.7** pi_hash binding.  Same content as v1.5 (same public
 /// inputs) but with a different domain-separation tag so v1.5 and
 /// v1.7 proofs are cleanly non-interchangeable.

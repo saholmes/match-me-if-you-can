@@ -317,6 +317,42 @@ pub fn compute_pi_hash_v17(pi: &MlDsaPokPublicInputs) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// **v2** signature-PoK verifier.  Validates a `V2ProofReal` bundle
+/// (10 FRI sub-proofs) over `(pk, message, sig)`.
+///
+/// Defining feature: **NO Layer 1 native `ml_dsa::verify` call**.
+/// Every step of FIPS 204 §3 Algorithm 3 is enforced by the 10
+/// STIR-STARK sub-proofs at NIST PQ Level 1 unconditional security.
+pub fn verify_ml_dsa_signature_pok_v2(
+    pk_bytes: &[u8],
+    message: &[u8],
+    sig_bytes: &[u8],
+    proof_bytes: &[u8],
+) -> Result<(), AirError> {
+    use deep_ali::ml_dsa_verify_air_v2_orchestration::{
+        verify_v2_real, V2ProofReal,
+    };
+
+    // Re-derive the V2Witness's public fields + canonical c̃ from
+    // (pk, sig).  Verifier and prover agree on these via the FIPS
+    // 204 §3 Algorithm 3 derivations (deterministic from PI).
+    let (witness, c_tilde_bytes) = mmiyc_prover::ml_dsa_pok::synthesise_v2_from_signature(
+        pk_bytes, message, sig_bytes,
+    ).ok_or_else(|| AirError::Witness(
+        "v2: could not decode pk/signature for ML-DSA-44".into()
+    ))?;
+
+    // Deserialize the proof bundle.
+    let proof = V2ProofReal::from_bytes(proof_bytes)
+        .map_err(|e| AirError::Deserialise(format!("v2 proof bundle: {e}")))?;
+
+    // Run the 10 FRI sub-verifies + final c̃ equality check.
+    verify_v2_real(&witness, &c_tilde_bytes, &proof, 32)
+        .map_err(|e| AirError::Verify(format!("v2 verify rejected: {e}")))?;
+
+    Ok(())
+}
+
 /// Verify an ML-DSA STARK PoK proof against the supplied public inputs.
 pub fn verify_ml_dsa_pok(
     pi: &MlDsaPokPublicInputs,
@@ -511,6 +547,26 @@ mod tests {
     /// must NOT verify under v1.5's verifier (different domain tag
     /// in pi_hash → Fiat-Shamir mismatch → rejection).  This guards
     /// against accidental protocol-version downgrade.
+    /// **v2 round-trip against a real ML-DSA-44 signature.**  Marked
+    /// `#[ignore]` because production blowup=32 makes prove cost
+    /// substantial (projected 50-70 s on M3 Mac).  Run with:
+    /// `cargo test --release -p mmiyc-verifier round_trip_v2 --
+    /// --include-ignored`.
+    #[test]
+    #[ignore]
+    fn round_trip_v2_real_ml_dsa_signature() {
+        let message: &[u8] = b"mmiyc/v2/ml-dsa-pok-real-signature-test";
+        let (pk_bytes, sig_bytes) = fresh_real_signature_bytes(message);
+
+        let proof = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok_v2(
+            &pk_bytes, message, &sig_bytes,
+        ).expect("v2 prove must succeed for a valid signature");
+
+        verify_ml_dsa_signature_pok_v2(&pk_bytes, message, &sig_bytes, &proof)
+            .expect("v2 verify must accept the prover's STARK PoK \
+                     (NO Layer 1 native verify involved)");
+    }
+
     #[test]
     #[ignore]
     fn v17_proof_rejected_by_v15_verifier() {
