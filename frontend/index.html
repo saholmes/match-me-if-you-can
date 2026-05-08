@@ -203,6 +203,8 @@ window._mmiycVerifyMlDsaSignaturePokV15 = (pkHex, msgHex, sigHex, proofHex) =>
   callWorker('verify-ml-dsa-signature-pok-v15', [pkHex, msgHex, sigHex, proofHex]);
 window._mmiycVerifyMlDsaSignaturePokV17 = (pkHex, msgHex, sigHex, proofHex) =>
   callWorker('verify-ml-dsa-signature-pok-v17', [pkHex, msgHex, sigHex, proofHex]);
+window._mmiycVerifyMlDsaSignaturePokV2 = (pkHex, msgHex, sigHex, proofHex) =>
+  callWorker('verify-ml-dsa-signature-pok-v2', [pkHex, msgHex, sigHex, proofHex]);
 
 document.getElementById('browser-prove-btn').addEventListener('click', async () => {
   const out = document.getElementById('wasm-result');
@@ -515,6 +517,11 @@ $('reg-form').addEventListener('submit', async (ev) => {
                  style="background:#0f5e9c;margin-left:0.5rem;">
            Verify income (v1.7 PQ-airtight gate)
          </button>
+         <button type="button" id="verify-income-ml-dsa-v2-btn"
+                 data-user-id="${j.user_id}"
+                 style="background:#b8860b;margin-left:0.5rem;">
+           Verify income (v2 layer-1-free gate)
+         </button>
          ${window._mmiycLastIncomeProofHex
            ? `<button type="button" id="simulate-exfil-btn"
                       style="background:#a8527d;margin-left:0.5rem;">
@@ -544,6 +551,8 @@ $('reg-form').addEventListener('submit', async (ev) => {
   if (verifyMlDsaV15Btn) verifyMlDsaV15Btn.addEventListener('click', verifyIncomeLockedMlDsaV15);
   const verifyMlDsaV17Btn = $('verify-income-ml-dsa-v17-btn');
   if (verifyMlDsaV17Btn) verifyMlDsaV17Btn.addEventListener('click', verifyIncomeLockedMlDsaV17);
+  const verifyMlDsaV2Btn = $('verify-income-ml-dsa-v2-btn');
+  if (verifyMlDsaV2Btn) verifyMlDsaV2Btn.addEventListener('click', verifyIncomeLockedMlDsaV2);
   const exfilBtn = $('simulate-exfil-btn');
   if (exfilBtn) exfilBtn.addEventListener('click', simulateExfiltration);
 });
@@ -778,6 +787,85 @@ async function verifyIncomeLockedMlDsaV17(ev) {
        Layer 1's only remaining responsibility to be the SHAKE
        rounds + hint check (those become v2's territory).</span>`
     : `<span class="fail">v1.7 ML-DSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
+}
+
+// **v2 layer-1-free gate** — fully Layer-1-free.  Server prove
+// runs 10 FRI sub-proofs covering every step of FIPS 204 §3
+// Algorithm 3 in-circuit.  Browser verify runs 10 FRI verifies
+// + the c̃' = c̃ acceptance gate.  No native ml_dsa::verify on
+// either side.
+async function verifyIncomeLockedMlDsaV2(ev) {
+  const userId = ev.currentTarget.getAttribute('data-user-id');
+  const out = $('verify-income-result');
+  out.innerHTML = '<span class="small">requesting v2 layer-1-free gate response (server prove ~20 s) …</span>';
+
+  const nonceBytes = new Uint8Array(32);
+  crypto.getRandomValues(nonceBytes);
+  const nonceHex = bytesToHex(nonceBytes);
+
+  let r, j;
+  try {
+    r = await fetch(`/verify/income/ml_dsa_v2/${encodeURIComponent(userId)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nonce_hex: nonceHex }),
+    });
+    j = await r.json();
+  } catch (e) {
+    out.innerHTML = `<span class="fail">network error: ${e}</span>`;
+    return;
+  }
+  if (!r.ok) {
+    out.innerHTML = `<span class="fail">HTTP ${r.status}: ${JSON.stringify(j)}</span>`;
+    return;
+  }
+  if (!j.verified) {
+    out.innerHTML = `<span class="fail">STARK verification failed; v2 gate returns nil.</span>`;
+    return;
+  }
+  if (!j.proof_pok_hex || !j.signed_message_hex || !j.sig_hex || !j.ml_dsa_pk_hex) {
+    out.innerHTML = `<span class="fail">Missing v2 ML-DSA gate fields.</span>`;
+    return;
+  }
+
+  out.innerHTML = `<span class="small">verifying v2 layer-1-free PoK in WASM
+    (proof bundle ${(j.proof_pok_hex.length / 2 / 1024).toFixed(1)} KiB; 10 FRI sub-proofs) …</span>`;
+  const tStart = performance.now();
+  let v;
+  try {
+    v = await window._mmiycVerifyMlDsaSignaturePokV2(
+      j.ml_dsa_pk_hex, j.signed_message_hex, j.sig_hex, j.proof_pok_hex,
+    );
+  } catch (e) {
+    out.innerHTML = `<span class="fail">verify_ml_dsa_signature_pok_v2 threw: ${e}</span>`;
+    return;
+  }
+  const wall = performance.now() - tStart;
+
+  out.innerHTML = v.verified
+    ? `<span class="ok">Service-attested verification ✓ (v2 layer-1-free gate)</span>
+       <br>STARK PoK enforces in-circuit ALL of FIPS 204 §3 Algorithm 3:
+       <ul class="small" style="margin:0.3em 0 0.3em 1.5em;">
+         <li>Polynomial-arithmetic verify equation (V17 region).</li>
+         <li>Response-polynomial norm bound <code>‖z‖∞ &lt; γ_1 − β</code>.</li>
+         <li>NTT consistency <code>ẑ_l = NTT(z_l)</code> for all <code>l</code>.</li>
+         <li>Inverse-NTT <code>w_approx = NTT⁻¹(w_approx_ntt)</code> (4× T7).</li>
+         <li>Per-coefficient HighBits/Decompose + UseHint + W1Encode (1024 rows × 3 sub-AIRs).</li>
+         <li>Transcript SHAKE-256 absorb of <code>µ ‖ w1bytes</code>.</li>
+         <li>Final acceptance <code>c̃' == c̃</code>.</li>
+         <li>Cross-region equalities (T-MEM permutation argument over 9,728 entries).</li>
+       </ul>
+       <span class="small">Browser ran <strong>10 FRI sub-verifies + the c̃' = c̃ gate</strong>
+       — and <em>no native</em> <code>ml_dsa::verify</code>.  The STARK is the
+       sole soundness layer.  Wall ${wall.toFixed(1)} ms;
+       WASM ${v.verify_ms.toFixed(1)} ms; pk pin
+       <code>${j.ml_dsa_pk_hex.slice(0, 24)}…</code>.</span>
+       <br><span class="small">v2's cryptographic claim: full FIPS 204 §3
+       Algorithm 3 verify proven in-circuit by 10 STIR-STARK sub-proofs at
+       NIST PQ Level 1 unconditional security (STIR information-theoretic
+       low-degree-test soundness + SHA-3 collision resistance).  This is the
+       cryptographically strongest gate the demo offers.</span>`
+    : `<span class="fail">v2 layer-1-free PoK failed to verify.  Treat as untrusted.</span>`;
 }
 
 // Exfiltration demo: an attacker has somehow obtained the

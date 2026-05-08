@@ -56,6 +56,7 @@ pub fn build_router(state: AppState, static_dir: Option<std::path::PathBuf>) -> 
         .route("/verify/income/ml_dsa/:user_id", post(verify_income_locked_ml_dsa))
         .route("/verify/income/ml_dsa_v15/:user_id", post(verify_income_locked_ml_dsa_v15))
         .route("/verify/income/ml_dsa_v17/:user_id", post(verify_income_locked_ml_dsa_v17))
+        .route("/verify/income/ml_dsa_v2/:user_id",  post(verify_income_locked_ml_dsa_v2))
         .route("/service/pubkey", get(service_pubkey))
         .route("/service/ml_dsa_pok", post(ml_dsa_pok_demo))
         .with_state(state);
@@ -635,6 +636,82 @@ async fn verify_income_locked_ml_dsa_v17(
     let pok = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok_v17(
         &pk_bytes, &signed_message, &sig_bytes,
     ).map_err(|e| AppError::Internal(anyhow::anyhow!("ml-dsa-pok-v1.7 prove: {e}")))?;
+
+    Ok(Json(VerifyIncomeMlDsaResponse {
+        verified: true,
+        ml_dsa_pk_hex:      Some(hex::encode(&pk_bytes)),
+        signed_message_hex: Some(hex::encode(&signed_message)),
+        sig_hex:            Some(hex::encode(&sig_bytes)),
+        proof_pok_hex:      Some(hex::encode(&pok)),
+    }))
+}
+
+// ─── /verify/income/ml_dsa_v2/:user_id ─────────────────────────────
+//
+// **v2** ML-DSA-STARK gate — fully Layer-1-free.  Every step of
+// FIPS 204 §3 Algorithm 3 verify is enforced by 10 STIR-STARK
+// sub-proofs (V17 + 4× INTT + 3× COEFF + Transcript + T-MEM).
+// No native ml_dsa::verify on the server prove path AND no native
+// verify in the browser — the STARK is the sole soundness layer
+// at NIST PQ Level 1 unconditional security.
+//
+// Server prove ~20 s on M3 Mac (parallel + sha3-256, blowup=32);
+// proof bundle ~3-5 MB across the 10 sub-proofs.
+
+async fn verify_income_locked_ml_dsa_v2(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    Json(req): Json<VerifyIncomeRequest>,
+) -> Result<Json<VerifyIncomeMlDsaResponse>, AppError> {
+    let nonce = hex::decode(&req.nonce_hex)
+        .map_err(|e| AppError::BadRequest(format!("nonce_hex: {}", e)))?;
+
+    let row = match state.scenario {
+        Scenario::Pii => return Err(AppError::BadRequest(
+            "/verify/income/ml_dsa_v2/:id is only meaningful under the Proofs scenario".into(),
+        )),
+        Scenario::Proofs => db::fetch_proofs(&state.pool, &user_id)
+            .await.map_err(AppError::Internal)?
+            .ok_or(AppError::NotFound)?,
+    };
+    let stored_blob = row.income_proof
+        .ok_or_else(|| AppError::BadRequest("no income proof on record".into()))?;
+    let policy_json = row.income_policy_json
+        .ok_or_else(|| AppError::BadRequest("no income policy on record".into()))?;
+    let public: income::Public = serde_json::from_str(&policy_json)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    let proof = decrypt_at_rest(&state, stored_blob)?;
+    let verified = verify_income(&public, &proof).is_ok();
+    if !verified {
+        return Ok(Json(VerifyIncomeMlDsaResponse {
+            verified: false,
+            ml_dsa_pk_hex: None,
+            signed_message_hex: None,
+            sig_hex: None,
+            proof_pok_hex: None,
+        }));
+    }
+
+    let signed_message = {
+        let mut h = Sha3_256::new();
+        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding");
+        h.update(&nonce);
+        h.update(b"|proof|");
+        h.update(&proof);
+        h.update(b"|policy|");
+        h.update(policy_json.as_bytes());
+        h.finalize().to_vec()
+    };
+
+    let kp = crate::ml_dsa::Keypair::generate();
+    let pk_bytes = kp.public_key_bytes();
+    let sig_bytes = kp.sign(&signed_message);
+
+    // v2 STARK PoK: no Layer 1 dependency on the verifier side.
+    let pok = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok_v2(
+        &pk_bytes, &signed_message, &sig_bytes,
+    ).map_err(|e| AppError::Internal(anyhow::anyhow!("ml-dsa-pok-v2 prove: {e}")))?;
 
     Ok(Json(VerifyIncomeMlDsaResponse {
         verified: true,

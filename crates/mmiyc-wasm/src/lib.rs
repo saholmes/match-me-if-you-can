@@ -319,6 +319,36 @@ pub fn verify_ml_dsa_signature_pok_v15_in_browser(
         .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
 }
 
+/// **v2** browser verifier — fully Layer-1-free.  Routes through
+/// `verify_ml_dsa_signature_pok_v2` which runs 10 FRI sub-proofs
+/// + the c̃' = c̃ acceptance gate.  **No native ml_dsa::verify call
+/// in the browser** — the STARK is the sole soundness layer.
+#[wasm_bindgen]
+pub fn verify_ml_dsa_signature_pok_v2_in_browser(
+    pk_hex: String,
+    message_hex: String,
+    sig_hex: String,
+    proof_hex: String,
+) -> Result<JsValue, JsValue> {
+    let pk      = hex_to_bytes(&pk_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: pk_hex"))?;
+    let message = hex_to_bytes(&message_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: message_hex"))?;
+    let sig     = hex_to_bytes(&sig_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: sig_hex"))?;
+    let proof   = hex_to_bytes(&proof_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: proof_hex"))?;
+
+    let t0 = web_sys_now();
+    let verified = mmiyc_verifier::ml_dsa_pok::verify_ml_dsa_signature_pok_v2(
+        &pk, &message, &sig, &proof,
+    ).is_ok();
+    let verify_ms = web_sys_now() - t0;
+
+    serde_wasm_bindgen::to_value(&VerifyResult { verified, verify_ms })
+        .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
 /// **v1.7** browser verifier — same signature shape as v1, but
 /// routes through `verify_ml_dsa_signature_pok_v17` so the STARK's
 /// in-circuit NTT-consistency region is checked.
