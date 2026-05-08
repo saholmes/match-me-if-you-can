@@ -7,7 +7,11 @@ authors.workspace = true
 description = "Native STARK proof verification for Match-Me-If-You-Can"
 
 [dependencies]
-mmiyc-air = { path = "../mmiyc-air" }
+mmiyc-air    = { path = "../mmiyc-air" }
+# `verify_ml_dsa_signature_pok` shares the FIPS 204 byte-decode +
+# ExpandA + NTT derivation helper with the prover, so this is now
+# a runtime dep (in addition to its long-standing dev-dep role).
+mmiyc-prover = { path = "../mmiyc-prover" }
 
 deep_ali       = { workspace = true }
 ark-ff         = { workspace = true }
@@ -22,11 +26,22 @@ sha3          = { workspace = true }
 # RSA-2048 PoK verifier — see mirror dep in mmiyc-prover.
 sha2 = "0.10"
 
+# Native ML-DSA-44 signature verify, used by
+# `verify_ml_dsa_signature_pok` as a defense-in-depth check
+# alongside the STARK PoK.  The STARK proves the polynomial
+# core; the native verify enforces full FIPS 204 §3 Algorithm 3
+# acceptance (`c̃ = c̃'` after UseHint + w1Encode + SHAKE-256).
+ml-dsa = "0.1.0-rc.9"
+
 [dev-dependencies]
-mmiyc-prover = { path = "../mmiyc-prover" }
+# (mmiyc-prover is now a regular dep, no longer dev-only.)
 # Real RSA-2048 keypair for the round-trip test of
 # `prove_rsa_pok` / `verify_rsa_pok`.  sha2's `oid` feature is
 # required by rsa's PKCS#1 v1.5 SignerKey<Sha256> wiring.
 rsa  = "0.9"
 rand = { workspace = true }
 sha2 = { version = "0.10", features = ["oid"] }
+# Real ML-DSA-44 keypair for the signature-driven PoK round-trip
+# test of `prove_ml_dsa_signature_pok` / `verify_ml_dsa_signature_pok`.
+ml-dsa    = "0.1.0-rc.9"
+getrandom = { version = "0.4", features = ["sys_rng"] }

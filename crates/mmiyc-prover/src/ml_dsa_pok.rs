@@ -62,6 +62,96 @@ pub struct MlDsaPokWitness {
     pub z_ntt: Box<[[u32; N]; L]>,
 }
 
+/// Derive `(public_inputs, witness)` from a real ML-DSA-44
+/// signature.  Implements the FIPS 204 §3 Algorithm 3 step-5 setup:
+///
+/// 1. Decode `pk_bytes` → `(ρ, t1)` (FIPS 204 §3.5.4).
+/// 2. Decode `sig_bytes` → `(c̃, z, h)` (FIPS 204 §3.5.5).
+/// 3. ExpandA(ρ) → matrix Â already in NTT domain (FIPS 204 §3.4).
+/// 4. c ← SampleInBall(c̃); c_hat ← NTT(c).
+/// 5. t1_2d ← t1 · 2^d; t1_2d_hat ← NTT per polynomial.
+/// 6. z_hat ← NTT per polynomial of z.
+/// 7. w_approx_ntt[k][i] = Σ_l Â[k][l][i]·z_hat[l][i]
+///                         − c_hat[i]·t1_2d_hat[k][i]   (mod q)
+///
+/// The returned tuple is exactly what `prove_ml_dsa_pok` consumes.
+/// The same function is used by the verifier (it has access to all
+/// of `pk_bytes`, `message`, `sig_bytes`).
+pub fn synthesise_from_signature(
+    pk_bytes: &[u8],
+    _message: &[u8],
+    sig_bytes: &[u8],
+) -> Option<(MlDsaPokPublicInputs, MlDsaPokWitness)> {
+    use deep_ali::ml_dsa_codec::{decode_pk, decode_signature, expand_a, t1_times_2d};
+    use deep_ali::ml_dsa_field::{add_q, mul_q, sub_q};
+    use deep_ali::ml_dsa_ntt::ntt;
+    use deep_ali::ml_dsa_sample_in_ball::sample_in_ball;
+
+    let (rho, t1) = decode_pk(pk_bytes)?;
+    let (c_tilde, z, _h) = decode_signature(sig_bytes)?;
+
+    // ExpandA already returns Â in NTT domain.
+    let a_hat = expand_a(&rho);
+
+    // c ← SampleInBall(c̃); c_hat ← NTT(c).
+    let mut c_poly = sample_in_ball(&c_tilde);
+    ntt(&mut c_poly);
+    let mut c_ntt = Box::new([0u32; N]);
+    *c_ntt = c_poly;
+
+    // t1·2^d, then NTT each polynomial.
+    let mut t1_2d = t1_times_2d(&t1);
+    for k in 0..K { ntt(&mut t1_2d[k]); }
+    let mut t1d_ntt: Box<[[u32; N]; K]> = Box::new([[0u32; N]; K]);
+    for k in 0..K { t1d_ntt[k] = t1_2d[k]; }
+
+    // NTT each z polynomial.
+    let mut z_ntt: Box<[[u32; N]; L]> = Box::new([[0u32; N]; L]);
+    for l in 0..L {
+        let mut zl = z[l];
+        ntt(&mut zl);
+        z_ntt[l] = zl;
+    }
+
+    // w_approx_ntt[k][i] = Σ_l a_hat[k][l][i]·z_ntt[l][i]
+    //                     − c_ntt[i]·t1d_ntt[k][i]   (mod q)
+    let mut w_approx_ntt: Box<[[u32; N]; K]> = Box::new([[0u32; N]; K]);
+    for k in 0..K {
+        for i in 0..N {
+            let mut acc: u32 = 0;
+            for l in 0..L {
+                acc = add_q(acc, mul_q(a_hat[k][l][i], z_ntt[l][i]));
+            }
+            let ct1d = mul_q(c_ntt[i], t1d_ntt[k][i]);
+            w_approx_ntt[k][i] = sub_q(acc, ct1d);
+        }
+    }
+
+    let pi = MlDsaPokPublicInputs {
+        a_ntt: a_hat,
+        c_ntt,
+        t1d_ntt,
+        w_approx_ntt,
+    };
+    let witness = MlDsaPokWitness { z_ntt };
+    Some((pi, witness))
+}
+
+/// Convenience: produce a STARK PoK over the public inputs derived
+/// from a real ML-DSA-44 signature.  Equivalent to running
+/// [`synthesise_from_signature`] then [`prove_ml_dsa_pok`].
+pub fn prove_ml_dsa_signature_pok(
+    pk_bytes: &[u8],
+    message: &[u8],
+    sig_bytes: &[u8],
+) -> Result<Vec<u8>, AirError> {
+    let (pi, witness) = synthesise_from_signature(pk_bytes, message, sig_bytes)
+        .ok_or_else(|| AirError::Witness(
+            "could not decode pk/signature for ML-DSA-44".into()
+        ))?;
+    prove_ml_dsa_pok(&pi, &witness)
+}
+
 /// Deterministically synthesise a `(public_inputs, witness)` pair
 /// from a 32-byte nonce.  Used by the v1 demo path so the browser
 /// and server can recompute the same inputs without shipping ~21

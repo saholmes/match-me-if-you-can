@@ -65,6 +65,56 @@ fn make_schedule(n0: usize) -> Vec<usize> {
     vec![2usize; n0.trailing_zeros() as usize]
 }
 
+/// Verify a real ML-DSA-44 signature PoK.  Two-layer check:
+///   1. **Native ML-DSA-44 verify** — runs the upstream
+///      RustCrypto `ml-dsa` verifier on `(pk, message, sig)`.
+///      Enforces full FIPS 204 §3 Algorithm 3 acceptance
+///      (`c̃ = c̃'` after UseHint + w1Encode + SHAKE-256).  Closes
+///      the soundness gap that the v1 STARK alone cannot enforce
+///      (the STARK proves only the polynomial-arithmetic core).
+///   2. **STARK PoK** — re-derives the AIR's public inputs from
+///      `(pk, message, sig)` exactly as the prover did, then
+///      verifies the FRI proof.
+///
+/// Returns `Ok(())` iff both layers accept.  The native check
+/// runs first so an obviously invalid signature is rejected
+/// before paying STARK-verify cost.
+pub fn verify_ml_dsa_signature_pok(
+    pk_bytes: &[u8],
+    message: &[u8],
+    sig_bytes: &[u8],
+    proof: &[u8],
+) -> Result<(), AirError> {
+    // Layer 1: native ML-DSA-44 verify.
+    use ml_dsa::{
+        signature::Verifier as _, EncodedVerifyingKey, MlDsa44, Signature, VerifyingKey,
+    };
+    let pk_arr: &EncodedVerifyingKey<MlDsa44> = pk_bytes
+        .try_into()
+        .map_err(|_| AirError::Deserialise(format!(
+            "ml-dsa-44 pk length mismatch: got {}", pk_bytes.len()
+        )))?;
+    let vk = VerifyingKey::<MlDsa44>::decode(pk_arr);
+    let sig = Signature::<MlDsa44>::try_from(sig_bytes)
+        .map_err(|e| AirError::Deserialise(format!("ml-dsa-44 sig decode: {e}")))?;
+    vk.verify(message, &sig)
+        .map_err(|e| AirError::Verify(format!("ml-dsa-44 native verify rejected: {e}")))?;
+
+    // Layer 2: STARK PoK.
+    let (pi_prover, _witness) = mmiyc_prover::ml_dsa_pok::synthesise_from_signature(
+        pk_bytes, message, sig_bytes,
+    ).ok_or_else(|| AirError::Witness(
+        "could not decode pk/signature for ML-DSA-44".into()
+    ))?;
+    let pi = MlDsaPokPublicInputs {
+        a_ntt:        pi_prover.a_ntt,
+        c_ntt:        pi_prover.c_ntt,
+        t1d_ntt:      pi_prover.t1d_ntt,
+        w_approx_ntt: pi_prover.w_approx_ntt,
+    };
+    verify_ml_dsa_pok(&pi, proof)
+}
+
 /// Verify an ML-DSA STARK PoK proof against the supplied public inputs.
 pub fn verify_ml_dsa_pok(
     pi: &MlDsaPokPublicInputs,
@@ -179,5 +229,54 @@ mod tests {
         tampered.c_ntt[0] = (tampered.c_ntt[0] + 1) % Q;
         assert!(verify_ml_dsa_pok(&tampered, &proof).is_err(),
             "proof under one pi must not verify under a different pi");
+    }
+
+    /// Real ML-DSA-44 signature round-trip: keygen via the upstream
+    /// `ml-dsa` crate, sign a message, run our prove_ml_dsa_signature_pok
+    /// over the encoded `(pk, sig)` bytes, then verify.  Exercises
+    /// the full FIPS 204 byte-decode + ExpandA + NTT chain.
+    fn fresh_real_signature_bytes(message: &[u8]) -> (Vec<u8>, Vec<u8>) {
+        use ml_dsa::{KeyGen, MlDsa44, signature::{Keypair as _, SignatureEncoding as _, Signer as _}};
+        use getrandom::{rand_core::UnwrapErr, SysRng};
+        let mut rng = UnwrapErr(SysRng);
+        let kp = MlDsa44::key_gen(&mut rng);
+        let pk_arr = kp.verifying_key().encode();
+        let pk_slice: &[u8] = pk_arr.as_ref();
+        let pk_bytes = pk_slice.to_vec();
+        let sig: ml_dsa::Signature<MlDsa44> = kp.sign(message);
+        let sig_arr = sig.to_bytes();
+        let sig_slice: &[u8] = sig_arr.as_ref();
+        let sig_bytes = sig_slice.to_vec();
+        (pk_bytes, sig_bytes)
+    }
+
+    #[test]
+    fn round_trip_real_ml_dsa_signature() {
+        let message: &[u8] = b"mmiyc/v1/ml-dsa-pok-real-signature-test";
+        let (pk_bytes, sig_bytes) = fresh_real_signature_bytes(message);
+
+        let proof = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok(
+            &pk_bytes, message, &sig_bytes,
+        ).expect("prove_ml_dsa_signature_pok must succeed for a valid signature");
+
+        verify_ml_dsa_signature_pok(&pk_bytes, message, &sig_bytes, &proof)
+            .expect("verify must accept the prover's own STARK PoK over the real signature");
+    }
+
+    #[test]
+    fn tampered_signature_breaks_pok() {
+        let msg: &[u8] = b"tamper test";
+        let (pk_bytes, sig_bytes) = fresh_real_signature_bytes(msg);
+
+        let proof = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok(
+            &pk_bytes, msg, &sig_bytes,
+        ).expect("prove ok");
+
+        // Flip one bit in the c_tilde portion of the signature so
+        // the derived pi_hash will differ on the verifier's side.
+        let mut tampered = sig_bytes.clone();
+        tampered[0] ^= 0x01;
+        assert!(verify_ml_dsa_signature_pok(&pk_bytes, msg, &tampered, &proof).is_err(),
+            "STARK PoK derived from one signature must not verify under a tampered signature");
     }
 }

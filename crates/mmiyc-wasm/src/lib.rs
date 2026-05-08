@@ -259,6 +259,36 @@ fn hex_to_bytes(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Verify a real ML-DSA-44 signature PoK in the browser.  The
+/// public inputs are derived from `(pk_hex, message_hex, sig_hex)`
+/// via the FIPS 204 byte decoders + ExpandA + native NTTs (same
+/// derivation the prover used).  Returns `{verified, verify_ms}`.
+#[wasm_bindgen]
+pub fn verify_ml_dsa_signature_pok_in_browser(
+    pk_hex: String,
+    message_hex: String,
+    sig_hex: String,
+    proof_hex: String,
+) -> Result<JsValue, JsValue> {
+    let pk      = hex_to_bytes(&pk_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: pk_hex"))?;
+    let message = hex_to_bytes(&message_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: message_hex"))?;
+    let sig     = hex_to_bytes(&sig_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: sig_hex"))?;
+    let proof   = hex_to_bytes(&proof_hex)
+        .ok_or_else(|| JsValue::from_str("bad hex: proof_hex"))?;
+
+    let t0 = web_sys_now();
+    let verified = mmiyc_verifier::ml_dsa_pok::verify_ml_dsa_signature_pok(
+        &pk, &message, &sig, &proof,
+    ).is_ok();
+    let verify_ms = web_sys_now() - t0;
+
+    serde_wasm_bindgen::to_value(&VerifyResult { verified, verify_ms })
+        .map_err(|e| JsValue::from_str(&format!("to_value: {e}")))
+}
+
 /// Verify an ML-DSA-STARK PoK in the browser.  The public inputs
 /// are derived deterministically from `nonce_hex` (must match the
 /// server's same derivation) — see `mmiyc_prover::ml_dsa_pok`'s

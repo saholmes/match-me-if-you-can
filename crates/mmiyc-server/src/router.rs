@@ -53,6 +53,7 @@ pub fn build_router(state: AppState, static_dir: Option<std::path::PathBuf>) -> 
         .route("/verify/age/:user_id", get(verify_age_h))
         .route("/verify/country/:user_id", get(verify_country_h))
         .route("/verify/income/:user_id", post(verify_income_locked))
+        .route("/verify/income/ml_dsa/:user_id", post(verify_income_locked_ml_dsa))
         .route("/service/pubkey", get(service_pubkey))
         .route("/service/ml_dsa_pok", post(ml_dsa_pok_demo))
         .with_state(state);
@@ -396,20 +397,126 @@ struct ServicePubkey {
     n_hex: String,
 }
 
-// ─── /service/ml_dsa_pok (demo) ────────────────────────────────────
+// ─── /verify/income/ml_dsa/:user_id ────────────────────────────────
+//
+// Parallel ML-DSA-STARK gate next to the existing RSA-STARK
+// `verify_income_locked`.  Same protocol shape (fresh nonce,
+// stored-proof STARK verify, signed gate response, browser-side
+// PoK verify), but with the operator's **ML-DSA-44** signing key
+// rather than RSA-2048.  Demonstrates the post-quantum upgrade
+// path end-to-end.
+
+#[derive(Debug, Serialize)]
+struct VerifyIncomeMlDsaResponse {
+    verified: bool,
+    /// Hex-encoded ML-DSA-44 public key (1 312 B).
+    ml_dsa_pk_hex: Option<String>,
+    /// `SHA3-256(b"mmiyc/v1/verify-income-ml-dsa-binding" ‖ nonce
+    ///           ‖ stark_proof ‖ policy_json)`.  Signed by the
+    /// operator's ML-DSA secret key; the browser passes this same
+    /// message to `verify_ml_dsa_signature_pok_in_browser`.
+    signed_message_hex: Option<String>,
+    /// Hex-encoded ML-DSA-44 signature (2 420 B).
+    sig_hex: Option<String>,
+    /// Hex-encoded ML-DSA STARK PoK (~644 KiB).
+    proof_pok_hex: Option<String>,
+}
+
+async fn verify_income_locked_ml_dsa(
+    State(state): State<AppState>,
+    Path(user_id): Path<String>,
+    Json(req): Json<VerifyIncomeRequest>,
+) -> Result<Json<VerifyIncomeMlDsaResponse>, AppError> {
+    let nonce = hex::decode(&req.nonce_hex)
+        .map_err(|e| AppError::BadRequest(format!("nonce_hex: {}", e)))?;
+
+    let row = match state.scenario {
+        Scenario::Pii => return Err(AppError::BadRequest(
+            "/verify/income/ml_dsa/:id is only meaningful under the Proofs scenario".into(),
+        )),
+        Scenario::Proofs => db::fetch_proofs(&state.pool, &user_id)
+            .await.map_err(AppError::Internal)?
+            .ok_or(AppError::NotFound)?,
+    };
+    let stored_blob = row.income_proof
+        .ok_or_else(|| AppError::BadRequest("no income proof on record".into()))?;
+    let policy_json = row.income_policy_json
+        .ok_or_else(|| AppError::BadRequest("no income policy on record".into()))?;
+    let public: income::Public = serde_json::from_str(&policy_json)
+        .map_err(|e| AppError::Internal(anyhow::anyhow!(e)))?;
+
+    let proof = decrypt_at_rest(&state, stored_blob)?;
+    let verified = verify_income(&public, &proof).is_ok();
+    if !verified {
+        return Ok(Json(VerifyIncomeMlDsaResponse {
+            verified: false,
+            ml_dsa_pk_hex: None,
+            signed_message_hex: None,
+            sig_hex: None,
+            proof_pok_hex: None,
+        }));
+    }
+
+    // Bind to (nonce, stark_proof, policy_json) — same shape as the
+    // RSA-STARK gate but with a distinct domain-separation tag so
+    // a captured RSA gate response can't be replayed in the
+    // ML-DSA gate's transcript and vice-versa.
+    let signed_message = {
+        let mut h = Sha3_256::new();
+        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding");
+        h.update(&nonce);
+        h.update(b"|proof|");
+        h.update(&proof);
+        h.update(b"|policy|");
+        h.update(policy_json.as_bytes());
+        h.finalize().to_vec()
+    };
+
+    // Generate a fresh ML-DSA-44 keypair on the fly.  In production
+    // this would be a persistent operator key (HSM/KMS); for the
+    // demo we keygen per call so the threat model is exactly the
+    // same as the RSA-STARK gate (`sk` lives only in this process'
+    // memory for the duration of the call).
+    let kp = crate::ml_dsa::Keypair::generate();
+    let pk_bytes = kp.public_key_bytes();
+    let sig_bytes = kp.sign(&signed_message);
+
+    // STARK PoK over the real signature.
+    let pok = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok(
+        &pk_bytes, &signed_message, &sig_bytes,
+    ).map_err(|e| AppError::Internal(anyhow::anyhow!("ml-dsa-pok prove: {e}")))?;
+
+    Ok(Json(VerifyIncomeMlDsaResponse {
+        verified: true,
+        ml_dsa_pk_hex:      Some(hex::encode(&pk_bytes)),
+        signed_message_hex: Some(hex::encode(&signed_message)),
+        sig_hex:            Some(hex::encode(&sig_bytes)),
+        proof_pok_hex:      Some(hex::encode(&pok)),
+    }))
+}
+
+// ─── /service/ml_dsa_pok (real-signature demo) ─────────────────────
 
 #[derive(Debug, Deserialize)]
 struct MlDsaPokDemoRequest {
-    /// 32-byte hex nonce; both server and browser derive the same
-    /// synthetic NTT-domain inputs from this nonce.
-    nonce_hex: String,
+    /// Caller-supplied message bytes (hex-encoded).  The server signs
+    /// these with a freshly-generated ML-DSA-44 keypair and ships the
+    /// `(pk, signature, STARK PoK)` triple.  Typically the caller
+    /// uses a 32-byte random nonce.
+    message_hex: String,
 }
 
 #[derive(Debug, Serialize)]
 struct MlDsaPokDemoResponse {
-    /// Hex-encoded FRI proof bytes.
+    /// Hex-encoded ML-DSA-44 verifying key (1 312 B raw → 2 624 hex chars).
+    pk_hex: String,
+    /// Hex-encoded ML-DSA-44 signature (2 420 B raw → 4 840 hex chars).
+    sig_hex: String,
+    /// Hex-encoded FRI proof bytes (~660 KiB raw).
     proof_pok_hex: String,
-    /// Server-side prove wall time (informational).
+    /// Server-side wall time for keygen + sign (ms).
+    keygen_sign_ms: f64,
+    /// Server-side wall time for STARK prove (ms).
     prove_ms: f64,
     /// Size of the proof bytes (informational).
     proof_bytes: usize,
@@ -418,25 +525,27 @@ struct MlDsaPokDemoResponse {
 async fn ml_dsa_pok_demo(
     Json(req): Json<MlDsaPokDemoRequest>,
 ) -> Result<Json<MlDsaPokDemoResponse>, AppError> {
-    let nonce_vec = hex::decode(&req.nonce_hex)
-        .map_err(|e| AppError::BadRequest(format!("nonce_hex: {e}")))?;
-    if nonce_vec.len() != 32 {
-        return Err(AppError::BadRequest(format!(
-            "nonce must be 32 bytes; got {}", nonce_vec.len()
-        )));
-    }
-    let mut nonce = [0u8; 32];
-    nonce.copy_from_slice(&nonce_vec);
+    let message = hex::decode(&req.message_hex)
+        .map_err(|e| AppError::BadRequest(format!("message_hex: {e}")))?;
 
     let t0 = std::time::Instant::now();
-    let (pi, witness) = mmiyc_prover::ml_dsa_pok::synthesise_from_nonce(&nonce);
-    let proof = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_pok(&pi, &witness)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("ml-dsa-pok prove: {e}")))?;
-    let prove_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let kp = crate::ml_dsa::Keypair::generate();
+    let pk_bytes = kp.public_key_bytes();
+    let sig_bytes = kp.sign(&message);
+    let keygen_sign_ms = t0.elapsed().as_secs_f64() * 1000.0;
+
+    let t1 = std::time::Instant::now();
+    let proof = mmiyc_prover::ml_dsa_pok::prove_ml_dsa_signature_pok(
+        &pk_bytes, &message, &sig_bytes,
+    ).map_err(|e| AppError::Internal(anyhow::anyhow!("ml-dsa-pok prove: {e}")))?;
+    let prove_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
     Ok(Json(MlDsaPokDemoResponse {
-        proof_bytes: proof.len(),
+        pk_hex:        hex::encode(&pk_bytes),
+        sig_hex:       hex::encode(&sig_bytes),
+        proof_bytes:   proof.len(),
         proof_pok_hex: hex::encode(&proof),
+        keygen_sign_ms,
         prove_ms,
     }))
 }

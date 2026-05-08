@@ -69,7 +69,16 @@
           style="background:#6a4caf;">
     Demo ML-DSA-STARK PoK
   </button>
-  <span class="small">— phase 7/8 v1: server proves an ML-DSA-44 STARK PoK over deterministic synthetic NTT inputs; browser verifies via WASM (deep_ali → ml_dsa_verify_air → FRI).</span>
+  <span class="small">— server generates a fresh ML-DSA-44
+    keypair, signs a random message, decodes the encoded
+    <code>(pk, sig)</code> via FIPS 204 byte decoders + ExpandA +
+    native NTTs, and produces a STARK PoK over the polynomial
+    core of §3 Algorithm 3.  Browser receives
+    <code>(pk, sig, proof)</code>, runs the same derivation,
+    and verifies via WASM
+    (native ml-dsa::verify + deep_ali → ml_dsa_verify_air → STIR
+    low-degree test).  Outer STARK soundness is concrete NIST PQ
+    Level 3, unconditional under STIR + SHA-3 (FIPS 202).</span>
   <div id="ml-dsa-demo-result"></div>
 </div>
 
@@ -188,6 +197,8 @@ window._mmiycVerifyIncome = (proofHex, nHex) =>
   callWorker('verify-income', [proofHex, nHex || '']);
 window._mmiycVerifyMlDsaPok = (nonceHex, proofHex) =>
   callWorker('verify-ml-dsa-pok', [nonceHex, proofHex]);
+window._mmiycVerifyMlDsaSignaturePok = (pkHex, msgHex, sigHex, proofHex) =>
+  callWorker('verify-ml-dsa-signature-pok', [pkHex, msgHex, sigHex, proofHex]);
 
 document.getElementById('browser-prove-btn').addEventListener('click', async () => {
   const out = document.getElementById('wasm-result');
@@ -237,25 +248,26 @@ const dobToDays = (yyyymmdd) => {
   return Math.floor(utc / 86400000);
 };
 
-// ML-DSA-STARK PoK demo: server produces a STARK PoK over
-// deterministically-derived synthetic NTT inputs, browser
-// verifies via WASM.  Phase 7/8 v1 — the synthetic-from-nonce
-// path stands in for the next-session ExpandA+sigDecode plumbing
-// that would derive the inputs from a real ML-DSA signature.
+// Real-signature ML-DSA-STARK PoK demo: server generates a fresh
+// ML-DSA-44 keypair, signs the supplied message, computes the
+// AIR's public inputs from the encoded `(pk, sig)` via FIPS 204
+// byte decoders + ExpandA + native NTTs, and produces a STARK PoK.
+// Browser receives `(pk, sig, proof)`, derives the same public
+// inputs locally, and verifies the FRI proof in WASM.
 async function runMlDsaPokDemo() {
   const out = $('ml-dsa-demo-result');
-  out.innerHTML = '<span class="small">requesting ML-DSA-STARK PoK from server …</span>';
+  out.innerHTML = '<span class="small">requesting real-signature ML-DSA-STARK PoK from server …</span>';
 
-  const nonceBytes = new Uint8Array(32);
-  crypto.getRandomValues(nonceBytes);
-  const nonceHex = bytesToHex(nonceBytes);
+  const msgBytes = new Uint8Array(32);
+  crypto.getRandomValues(msgBytes);
+  const msgHex = bytesToHex(msgBytes);
 
   let r, j;
   try {
     r = await fetch('/service/ml_dsa_pok', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ nonce_hex: nonceHex }),
+      body: JSON.stringify({ message_hex: msgHex }),
     });
     j = await r.json();
   } catch (e) {
@@ -267,27 +279,34 @@ async function runMlDsaPokDemo() {
     return;
   }
 
-  out.innerHTML = `<span class="small">verifying in WASM (proof ${(j.proof_bytes / 1024).toFixed(1)} KiB, server prove ${j.prove_ms.toFixed(1)} ms) …</span>`;
+  out.innerHTML = `<span class="small">verifying real-signature PoK in WASM (proof ${(j.proof_bytes / 1024).toFixed(1)} KiB, keygen+sign ${j.keygen_sign_ms.toFixed(1)} ms, server prove ${j.prove_ms.toFixed(1)} ms) …</span>`;
   const tStart = performance.now();
   let v;
   try {
-    v = await window._mmiycVerifyMlDsaPok(nonceHex, j.proof_pok_hex);
+    v = await window._mmiycVerifyMlDsaSignaturePok(
+      j.pk_hex, msgHex, j.sig_hex, j.proof_pok_hex,
+    );
   } catch (e) {
-    out.innerHTML = `<span class="fail">verify_ml_dsa_pok threw: ${e}</span>`;
+    out.innerHTML = `<span class="fail">verify_ml_dsa_signature_pok threw: ${e}</span>`;
     return;
   }
   const wall = performance.now() - tStart;
 
   out.innerHTML = v.verified
-    ? `<span class="ok">✓ ML-DSA-STARK PoK verified</span>
-       <br>Server prove: ${j.prove_ms.toFixed(1)} ms.
+    ? `<span class="ok">✓ Real ML-DSA-44 signature PoK verified</span>
+       <br>Server keygen+sign: ${j.keygen_sign_ms.toFixed(1)} ms.
+       Server STARK prove: ${j.prove_ms.toFixed(1)} ms.
        Browser WASM verify: ${v.verify_ms.toFixed(1)} ms (wall ${wall.toFixed(1)} ms).
        Proof: ${(j.proof_bytes / 1024).toFixed(1)} KiB.
-       <br>Both sides re-derived the same synthetic NTT-domain
-       inputs from the random nonce; the STARK proves the
+       <br>Both sides decoded the FIPS 204 byte-encoded
+       <code>(pk, sig)</code> via ExpandA + sigDecode + native
+       NTTs to derive the AIR's public inputs (Â, c, t1·2^d,
+       w_approx) in NTT domain.  The STARK proves the
        polynomial-arithmetic core of FIPS 204 §3 Algorithm 3 step 5
-       (w'_approx_ntt = Â·NTT(z) − NTT(c)·NTT(t1·2^d)) holds.`
-    : `<span class="fail">ML-DSA-STARK PoK verification failed in WASM.</span>`;
+       (w'_approx_ntt = Â·NTT(z) − NTT(c)·NTT(t1·2^d)) holds for
+       the witness <code>z_ntt</code> that came from this real ML-DSA-44
+       signature.`
+    : `<span class="fail">Real ML-DSA-STARK PoK verification failed in WASM.</span>`;
 }
 
 async function ping() {
@@ -475,7 +494,12 @@ $('reg-form').addEventListener('submit', async (ev) => {
     ? `<p>
          <button type="button" id="verify-income-btn"
                  data-user-id="${j.user_id}">
-           Verify income (service-locked)
+           Verify income (RSA-STARK gate)
+         </button>
+         <button type="button" id="verify-income-ml-dsa-btn"
+                 data-user-id="${j.user_id}"
+                 style="background:#1f8a70;margin-left:0.5rem;">
+           Verify income (ML-DSA-STARK gate)
          </button>
          ${window._mmiycLastIncomeProofHex
            ? `<button type="button" id="simulate-exfil-btn"
@@ -500,9 +524,95 @@ $('reg-form').addEventListener('submit', async (ev) => {
 
   const verifyBtn = $('verify-income-btn');
   if (verifyBtn) verifyBtn.addEventListener('click', verifyIncomeLocked);
+  const verifyMlDsaBtn = $('verify-income-ml-dsa-btn');
+  if (verifyMlDsaBtn) verifyMlDsaBtn.addEventListener('click', verifyIncomeLockedMlDsa);
   const exfilBtn = $('simulate-exfil-btn');
   if (exfilBtn) exfilBtn.addEventListener('click', simulateExfiltration);
 });
+
+// Parallel ML-DSA-STARK income gate.  Same protocol shape as the
+// RSA-STARK path (`verifyIncomeLocked`), but the operator's
+// signing key is ML-DSA-44 (FIPS 204, NIST PQ category 2) and the
+// PoK is over a real ML-DSA signature (not the synthetic-from-nonce
+// demo path).  Browser verifies via WASM
+// `verify_ml_dsa_signature_pok_in_browser`, which runs both the
+// native ML-DSA-44 verify and the FRI proof check.
+async function verifyIncomeLockedMlDsa(ev) {
+  const userId = ev.currentTarget.getAttribute('data-user-id');
+  const out = $('verify-income-result');
+  out.innerHTML = '<span class="small">requesting ML-DSA-STARK income gate response …</span>';
+
+  const nonceBytes = new Uint8Array(32);
+  crypto.getRandomValues(nonceBytes);
+  const nonceHex = bytesToHex(nonceBytes);
+
+  let r, j;
+  try {
+    r = await fetch(`/verify/income/ml_dsa/${encodeURIComponent(userId)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ nonce_hex: nonceHex }),
+    });
+    j = await r.json();
+  } catch (e) {
+    out.innerHTML = `<span class="fail">network error: ${e}</span>`;
+    return;
+  }
+  if (!r.ok) {
+    out.innerHTML = `<span class="fail">HTTP ${r.status}: ${JSON.stringify(j)}</span>`;
+    return;
+  }
+  if (!j.verified) {
+    out.innerHTML = `<span class="fail">STARK verification failed; ML-DSA gate returns nil.</span>`;
+    return;
+  }
+  if (!j.proof_pok_hex || !j.signed_message_hex || !j.sig_hex || !j.ml_dsa_pk_hex) {
+    out.innerHTML = `<span class="fail">Missing ML-DSA gate fields.</span>`;
+    return;
+  }
+
+  out.innerHTML = `<span class="small">verifying ML-DSA-STARK PoK in WASM
+    (proof ${(j.proof_pok_hex.length / 2 / 1024).toFixed(1)} KiB) …</span>`;
+  const tStart = performance.now();
+  let v;
+  try {
+    v = await window._mmiycVerifyMlDsaSignaturePok(
+      j.ml_dsa_pk_hex, j.signed_message_hex, j.sig_hex, j.proof_pok_hex,
+    );
+  } catch (e) {
+    out.innerHTML = `<span class="fail">verify_ml_dsa_signature_pok threw: ${e}</span>`;
+    return;
+  }
+  const wall = performance.now() - tStart;
+
+  out.innerHTML = v.verified
+    ? `<span class="ok">Service-attested verification ✓ (ML-DSA-STARK gate)</span>
+       <br>Income STARK verifies AND the response carries:
+       <ul class="small" style="margin:0.3em 0 0.3em 1.5em;">
+         <li>A real <strong>ML-DSA-44</strong> signature
+             (1,312 B pk, 2,420 B sig, FIPS 204 category 2 PQ)
+             over <code>signed_message = SHA3-256(nonce ‖
+             stark_proof ‖ policy)</code>.</li>
+         <li>A STARK PoK proving the polynomial-arithmetic core
+             of FIPS 204 §3 Algorithm 3 step 5
+             (<code>w'_approx_ntt = Â·NTT(z) − NTT(c)·NTT(t1·2^d)</code>).</li>
+       </ul>
+       <span class="small">Browser ran <strong>both</strong>
+       checks: native ML-DSA-44 verify (closes the v1 STARK
+       soundness gap) and the STIR-based STARK PoK.
+       Wall ${wall.toFixed(1)} ms;
+       WASM ${v.verify_ms.toFixed(1)} ms; pk pin
+       <code>${j.ml_dsa_pk_hex.slice(0, 24)}…</code>.</span>
+       <br><span class="small">Two independent NIST-PQ-secure
+       layers stack: (a) STARK soundness — concrete NIST PQ
+       Level 3, unconditional under STIR information-theoretic
+       low-degree-test soundness + SHA-3 collision resistance
+       (FIPS 202); (b) ML-DSA-44 EUF-CMA — NIST PQ Level 1
+       (FIPS 204, lattice).  An exfiltrated DB without
+       <code>sk_ml_dsa</code> cannot fabricate this PoK under
+       either assumption.</span>`
+    : `<span class="fail">ML-DSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
+}
 
 // Exfiltration demo: an attacker has somehow obtained the
 // cleartext income STARK proof (e.g., side-channel before encryption,
@@ -538,7 +648,7 @@ async function simulateExfiltration() {
   //    standing up a fake oracle: they construct a response with a
   //    plausibly-shaped proof_pok_hex (~106 KiB of garbage) and a
   //    fresh signed_message_hex (32 B).  Without sk_rsa they cannot
-  //    produce a PoK that satisfies the FRI low-degree test; the
+  //    produce a PoK that satisfies the STIR low-degree test; the
   //    WASM verifier rejects.
   const fakeMessage = new Uint8Array(32);
   crypto.getRandomValues(fakeMessage);
@@ -570,7 +680,7 @@ async function simulateExfiltration() {
       <span class="ok">①  Generic STARK verify on leaked proof: ${generic.verified ? '✓ accepts' : '✗ rejects'}</span>
       &nbsp;(WASM ${generic.verify_ms.toFixed(1)} ms)
       <br>The proof IS real — the leaked bytes are a valid
-      <code>deep_ali</code> FRI proof bound to the operator's policy
+      <code>deep_ali</code> STIR proof bound to the operator's policy
       including <code>n = ${nHex.slice(0, 16)}…</code>.
     </p>
 
@@ -582,7 +692,7 @@ async function simulateExfiltration() {
       &nbsp;(WASM ${designated.verify_ms.toFixed(1)} ms)
       <br>The attacker fabricated a 106 KiB <code>proof_pok_hex</code>
       of random bytes — without <code>sk_rsa</code> they cannot
-      produce one that satisfies the FRI low-degree test.  Any
+      produce one that satisfies the STIR low-degree test.  Any
       downstream consumer that pins <code>pk_rsa</code> rejects the
       forgery: the gate returns nil.
     </p>
@@ -602,7 +712,7 @@ async function simulateExfiltration() {
 // (nonce ‖ income_proof ‖ policy).  Browser verifies the PoK STARK
 // against the cached `n` via the WASM verifier (no WebCrypto
 // dependency).  An exfiltrated DB without `sk_rsa` cannot fabricate
-// the PoK — the FRI low-degree test would reject the forgery.
+// the PoK — the STIR low-degree test would reject the forgery.
 async function verifyIncomeLocked(ev) {
   const userId = ev.currentTarget.getAttribute('data-user-id');
   const out = $('verify-income-result');
@@ -672,9 +782,12 @@ async function verifyIncomeLocked(ev) {
        ${v.verify_ms.toFixed(1)} ms; proof
        ${(j.proof_pok_hex.length / 2 / 1024).toFixed(1)} KiB).
        <br>An exfiltrated DB without <code>sk_rsa</code> cannot
-       fabricate this PoK — the FRI low-degree test would reject
-       any forgery.  RSA signature itself is the STARK witness,
-       hidden from the wire.`
+       fabricate this PoK — the STIR low-degree test (concrete
+       NIST PQ Level 3, unconditional under STIR + SHA-3 FIPS 202)
+       would reject any forgery.  RSA signature itself is the
+       STARK witness, hidden from the wire.  Note that the inner
+       RSA-2048 layer is Shor-vulnerable; for a fully PQ-secure
+       gate use the green ML-DSA-STARK button below.`
     : `<span class="fail">RSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
 }
 </script>

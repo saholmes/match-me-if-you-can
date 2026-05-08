@@ -1018,8 +1018,9 @@ $1$\nobreakdash-record stacked
 \texttt{rsa2048\_stacked\_air} (the same primitive used for
 DNSSEC algorithm~$8$ in the upstream STARK\nobreakdash-DNS
 work, ported into the workspace).  $\pi_{\mathrm{pok}}$ is
-bound to $(n, \mathrm{EM}_m)$ through the standard FRI
-\texttt{public\_inputs\_hash} transcript.
+bound to $(n, \mathrm{EM}_m)$ through the
+\texttt{public\_inputs\_hash} transcript that the
+STIR\nobreakdash-based deep\nobreakdash-ALI verifier checks.
 
 \textbf{Security claim.}  Let $\mathcal{A}$ be a
 PPT adversary that, given only $(n,
@@ -1032,8 +1033,14 @@ verifier accepts under a fresh caller\nobreakdash-supplied
 $\mathit{nonce}^{\star}$.  Acceptance requires
 $\mathrm{deep\_fri\_verify}(\pi_{\mathrm{pok}}^{\star};\,
 \mathrm{public\_inputs\_hash}(n, \mathrm{EM}_{m^{\star}}))$,
-which by FRI knowledge\nobreakdash-soundness extracts a
-witness $\sigma^{\star}$ satisfying
+whose soundness is the STIR information\nobreakdash-theoretic
+low\nobreakdash-degree test plus SHA\nobreakdash-3 collision
+resistance — concrete NIST PQ Level~3 unconditionally under
+the parameter calibration of \S\ref{sec:eval-compute}
+(STIR\nobreakdash-aligned $r=39$ queries, $\rho_0=1/32$,
+extension degree $e=6$).  The STIR knowledge\nobreakdash-soundness
+property [STIR Thm.~1] then extracts a witness $\sigma^{\star}$
+satisfying
 $\mathcal{R}_{\mathrm{rsa}}\bigl((n,
 \mathrm{EM}_{m^{\star}}),\sigma^{\star}\bigr)$ — i.e.\ a
 valid \textsc{rsassa\nobreakdash-pkcs1\nobreakdash-v1\_5}
@@ -1051,6 +1058,17 @@ knowledge of a fresh\nobreakdash-message
 \textsc{rsassa\nobreakdash-pkcs1\nobreakdash-v1\_5} forgery,
 which under \textsc{euf\nobreakdash-cma} is achievable only by
 parties with signing access to $\mathit{sk}$.
+
+\textbf{Layer\nobreakdash-by\nobreakdash-layer post\nobreakdash-quantum
+posture.}  The outer STARK is concrete NIST~PQ Level~3
+unconditional (STIR + SHA\nobreakdash-3, no algebraic\nobreakdash-hash
+assumption); the inner RSA\nobreakdash-2048 signature is
+classically EUF\nobreakdash-CMA but Shor\nobreakdash-vulnerable
+under a CRQC.  This gate is therefore PQ\nobreakdash-secure
+\emph{in soundness of the STARK PoK} but not in the underlying
+authentication primitive.  The ML\nobreakdash-DSA\nobreakdash-STARK
+gate below replaces RSA with FIPS~204 ML\nobreakdash-DSA\nobreakdash-44
+to close the inner layer.
 
 \textbf{Honest\nobreakdash-prover privacy of $\sigma$.}  The
 deep\nobreakdash-ALI / FRI construction we use is sound but is
@@ -1076,7 +1094,7 @@ solicit.
 laptop, $1$\nobreakdash-record \texttt{rsa2048\_stacked\_air} at
 $n_{\mathrm{trace}} {=} 32$, BLOWUP $32$,
 arity\nobreakdash-$8$ STIR fold,
-$54$ FRI queries):
+$54$ STIR queries):
 server\nobreakdash-side prove $\sim\!\num{150}$\,ms;
 $|\pi_{\mathrm{pok}}| = \num{108\,666}$\,bytes ($\sim\!\num{106}$\,KiB);
 \texttt{wasm-bindgen} verify in the browser
@@ -1085,6 +1103,75 @@ $\num{6}$--$\num{8}$\,ms on warm caches;
 WASM verify, $\num{13}$--$\num{19}$\,ms.  The at\nobreakdash-rest
 encrypt at registration time costs $\sim\!\num{1}$\,ms, lost in
 noise behind the STARK prove.
+
+\paragraph{ML\nobreakdash-DSA\nobreakdash-STARK gate (FIPS~204
+post\nobreakdash-quantum).}  The RSA\nobreakdash-STARK gate
+above provides a STARK PoK whose \emph{outer} soundness is
+NIST~PQ Level~3 unconditional under STIR + SHA\nobreakdash-3,
+but whose \emph{inner} signature scheme (RSA\nobreakdash-2048
+PKCS\#1 v1.5) is Shor\nobreakdash-vulnerable.  The parallel
+\texttt{POST /verify/income/ml\_dsa/:id} endpoint replaces the
+inner layer with FIPS~204 ML\nobreakdash-DSA\nobreakdash-44
+(NIST~PQ Level~1, lattice\nobreakdash-based, Module\nobreakdash-LWE +
+Module\nobreakdash-SIS).  Same protocol shape: caller\nobreakdash-supplied
+$\mathit{nonce}^{\star}$ binds into a SHA3\nobreakdash-$256$
+transcript over $(\mathit{nonce}^{\star},
+\pi_{\mathrm{income}}, \mathit{policy})$ with a distinct
+domain\nobreakdash-separation tag; the operator's
+ML\nobreakdash-DSA\nobreakdash-44 secret key signs the
+transcript; a STARK PoK proves the polynomial\nobreakdash-arithmetic
+core of FIPS~204 §3 Algorithm~3 step~5 holds.
+
+The PoK relation is
+\[
+\mathcal{R}_{\mathrm{ml\textnormal-dsa}} : \quad
+\mathbf{w}'_{\mathrm{approx}}\big|_{\mathrm{NTT}}[k][i] \;=\;
+\sum_{l=0}^{L-1} \hat{A}[k][l][i]\cdot\widehat{\mathbf{z}}[l][i]
+\;-\;\hat{c}[i]\cdot\widehat{(t_1\cdot 2^d)}[k][i]
+\;\;\;(\bmod q)
+\]
+for every $(k,i) \in \{0,\dots,K{-}1\}\times\{0,\dots,N{-}1\}$
+in $\mathbb{Z}_q$ with $q=8\,380\,417$, $N=256$, $K=L=4$ (FIPS~204
+ML\nobreakdash-DSA\nobreakdash-44 parameters).  Public inputs
+$(\hat{A}, \hat{c}, \widehat{(t_1\cdot 2^d)},
+\mathbf{w}'_{\mathrm{approx}}|_{\mathrm{NTT}})$ are derived
+deterministically by both prover and verifier from the encoded
+$(\mathit{pk}, \mathit{sig})$ via FIPS~204 §3.4 ExpandA, §3.5.5
+sigDecode, native NTTs, and the polynomial equation; the witness
+$\widehat{\mathbf{z}}$ is the response polynomial in NTT domain.
+
+\textbf{Two\nobreakdash-layer security.}  The verifier checks
+both: (a) native FIPS~204 ML\nobreakdash-DSA\nobreakdash-44
+verification of $(\mathit{pk}, \mathit{signed\_message},
+\mathit{sig})$ — closes the v1 STARK soundness gap that the
+polynomial\nobreakdash-arithmetic core alone does not enforce
+the FIPS~204 challenge\nobreakdash-recomputation step
+($\tilde{c}=\tilde{c}'$); and (b) the STARK PoK over
+$\mathcal{R}_{\mathrm{ml\textnormal-dsa}}$.  An adversary
+without $\mathit{sk}_{\mathrm{ml\textnormal-dsa}}$ fails layer~(a)
+under ML\nobreakdash-DSA\nobreakdash-44 EUF\nobreakdash-CMA
+(NIST~PQ Level~1, lattice); separately, fails layer~(b) under
+STIR knowledge\nobreakdash-soundness + SHA\nobreakdash-3 CR
+(NIST~PQ Level~3, unconditional).  The two layers stack
+independently; both are post\nobreakdash-quantum.
+
+\textbf{Measured costs} (Apple\nobreakdash-Silicon laptop,
+\texttt{ml\_dsa\_verify\_air} at $n_{\mathrm{trace}}=2^{10}$,
+BLOWUP $32$, arity\nobreakdash-2 fold,
+$54$ STIR queries):
+server\nobreakdash-side ML\nobreakdash-DSA keygen + sign
+$\sim\!\num{1}$\,ms; STARK prove $\sim\!\num{270}$--$\num{320}$\,ms;
+$|\pi_{\mathrm{pok}}| = \num{659\,548}$\,bytes
+($\sim\!\num{644}$\,KiB);
+$|\mathit{pk}|+|\mathit{sig}|=1\,312+2\,420=\num{3\,732}$\,B
+(FIPS~204 Table~1 ML\nobreakdash-DSA\nobreakdash-44);
+WASM verify (native ml\nobreakdash-dsa + STIR) $\num{11}$--$\num{25}$\,ms;
+\texttt{POST /verify/income/ml\_dsa/:id} round\nobreakdash-trip
+$\num{34}$\,ms wall, browser\nobreakdash-side.  The proof is
+$\sim\!6\times$ the RSA\nobreakdash-STARK gate's; this reflects
+the larger trace ($K\cdot N=1\,024$ rows vs.\ $32$) inherent to
+the FIPS~204 polynomial\nobreakdash-relation form rather than
+any STIR\nobreakdash-parameter inflation.
 
 \paragraph{Asymmetry under exfiltration (measured).}  The
 security claim has a directly observable consequence: an
@@ -1113,12 +1200,12 @@ client\nobreakdash-side via the demo's
         \texttt{verify\_rsa\_pok\_in\_browser}:
         $\sim\!\num{0}$\,ms, rejects at the
         \texttt{ark\_serialize} envelope check (random bytes do
-        not parse as a \texttt{DeepFriProof}; the FRI
+        not parse as a \texttt{DeepFriProof}; the STIR
         low\nobreakdash-degree test is never reached).
 \end{enumerate}
 
 The measured asymmetry instantiates the claim: leaked
-$\pi_{\mathrm{income}}$ verifies under generic FRI (the proof
+$\pi_{\mathrm{income}}$ verifies under generic STIR (the proof
 IS valid; the privacy claim of the STARK is intact), but
 producing a fresh \texttt{/verify/income/:id} response that any
 verifier pinning $n$ accepts is hard under

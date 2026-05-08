@@ -1783,6 +1783,8 @@ dependencies = [
  "ark-goldilocks",
  "ark-serialize 0.4.2",
  "deep_ali",
+ "getrandom 0.4.2",
+ "ml-dsa",
  "mmiyc-air",
  "mmiyc-prover",
  "rand 0.8.6",
