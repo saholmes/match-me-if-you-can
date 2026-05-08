@@ -22,7 +22,12 @@ description = "Privacy-preserving registration via STARK-STIR proofs over PII"
 [workspace.dependencies]
 # --- STARK-STIR core (path-dependency on the local stark-stir-swarm checkout)
 # These mirror the workspace deps in stark-stir-swarm so versions stay in lock-step.
-deep_ali       = { path = "../stark-stir-swarm/crates/deep_ali" }
+# Activate `parallel` (rayon multi-core for LDE FFT, constraint eval, FRI)
+# and `sha3-256` (NIST PQ Level 1 STARK params per STARK_STIR.pdf).
+# Without `parallel`, prove runs single-threaded ⇒ 4–8× slower than realistic.
+# To switch the demo to NIST PQ Level 3, change `sha3-256` → `sha3-384` here
+# AND in the `hash`/`merkle`/`transcript` lines below.
+deep_ali       = { path = "../stark-stir-swarm/crates/deep_ali", features = ["parallel", "sha3-256"] }
 # Upstream `hash` crate requires one of the `sha3-256/384/512` features
 # to compile.  We pick `sha3-256` to match `stark-stir-swarm/swarm-dns`.
 hash           = { path = "../stark-stir-swarm/crates/hash",       default-features = false, features = ["sha3-256"] }
