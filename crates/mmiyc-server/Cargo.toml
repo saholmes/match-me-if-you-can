@@ -12,10 +12,10 @@ path = "src/main.rs"
 
 [features]
 # Forward ml_dsa parameter set from deep_ali.  Exactly one must be active;
-# default = mldsa-44 (NIST PQ Level 1).  Switch by editing the workspace
-# Cargo.toml's deep_ali features list (this crate's feature follows along
-# via workspace dependency activation).
-default  = ["mldsa-44"]
+# default = mldsa-65 (NIST PQ Level 3, paper-aligned demo default).
+# Switch by editing the workspace Cargo.toml's deep_ali features list
+# (this crate's feature follows along via workspace dependency activation).
+default  = ["mldsa-65"]
 mldsa-44 = []
 mldsa-65 = []
 mldsa-87 = []

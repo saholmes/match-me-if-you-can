@@ -7,7 +7,7 @@ authors.workspace = true
 description = "Native STARK proof verification for Match-Me-If-You-Can"
 
 [features]
-default  = ["mldsa-44"]
+default  = ["mldsa-65"]
 mldsa-44 = []
 mldsa-65 = []
 mldsa-87 = []

@@ -22,22 +22,27 @@ description = "Privacy-preserving registration via STARK-STIR proofs over PII"
 [workspace.dependencies]
 # --- STARK-STIR core (path-dependency on the local stark-stir-swarm checkout)
 # These mirror the workspace deps in stark-stir-swarm so versions stay in lock-step.
-# Activate `parallel` (rayon multi-core for LDE FFT, constraint eval, FRI)
-# and `sha3-384` (NIST PQ **Level 3** STARK params per STARK_STIR.pdf).
-# - sha3-384 ⇒ FIPS 202 collision resistance λ_col = 192 bits
-# - Combined with NUM_QUERIES = 79 (Johnson-regime, ~2.5 bits/query at
-#   ρ₀ = 1/32) gives ε_IT ≈ 2⁻¹⁹⁷·⁵, comfortably below 2⁻¹⁹².
-# - Total bound (QROM): ε ≤ ε_IT + ε_bind + ε_FS, all ≤ 2⁻¹⁹².
-# To revert to Level 1 (faster, smaller proofs), change `sha3-384` →
-# `sha3-256` here AND in `hash`/`merkle`/`transcript` lines below, AND
-# set NUM_QUERIES = 54 in mmiyc-{prover,verifier}/src/ml_dsa_pok.rs +
-# deep_ali's V2_NUM_QUERIES.
-deep_ali       = { path = "../stark-stir-swarm/crates/deep_ali", features = ["parallel", "sha3-256", "mldsa-44"], default-features = false }
+# Active configuration: NIST PQ **Level 3** (paper-aligned demo default).
+#   - parallel:   rayon multi-core for LDE FFT, constraint eval, FRI
+#   - sha3-384:   FIPS 202 collision resistance λ_col = 192 bits
+#   - mldsa-65:   ML-DSA-65 signing scheme (FIPS 204 §3, NIST cat 3)
+#   - r = 79 queries (auto-derived from `deep_ali::stark_level::NUM_QUERIES_LEVEL`)
+#     gives ε_IT ≈ 2⁻¹⁹⁷·⁵ at ρ₀ = 1/32 (Johnson regime, unconditional),
+#     comfortably below the 2⁻¹⁹² Level 3 target.
+#   - Total bound (QROM): ε ≤ ε_IT + ε_bind + ε_FS, all ≤ 2⁻¹⁹².
+#
+# To switch levels, edit the four `features = [...]` lines below in
+# lock-step.  All four must agree on the same `sha3-N` level, and
+# `deep_ali` must additionally name the matching `mldsa-N`:
+#   Level 1: parallel + sha3-256 + mldsa-44
+#   Level 3: parallel + sha3-384 + mldsa-65   (← current default)
+#   Level 5: parallel + sha3-512 + mldsa-87
+deep_ali       = { path = "../stark-stir-swarm/crates/deep_ali", features = ["parallel", "sha3-384", "mldsa-65"], default-features = false }
 # Upstream `hash` crate requires one of the `sha3-256/384/512` features
 # to compile.  All four lines below must agree on the same level.
-hash           = { path = "../stark-stir-swarm/crates/hash",       default-features = false, features = ["sha3-256"] }
-merkle         = { path = "../stark-stir-swarm/crates/merkle",     default-features = false, features = ["sha3-256"] }
-transcript     = { path = "../stark-stir-swarm/crates/transcript", default-features = false, features = ["sha3-256"] }
+hash           = { path = "../stark-stir-swarm/crates/hash",       default-features = false, features = ["sha3-384"] }
+merkle         = { path = "../stark-stir-swarm/crates/merkle",     default-features = false, features = ["sha3-384"] }
+transcript     = { path = "../stark-stir-swarm/crates/transcript", default-features = false, features = ["sha3-384"] }
 ark-goldilocks = { path = "../stark-stir-swarm/crates/ark-goldilocks", version = "0.1.0" }
 public-inputs  = { path = "../stark-stir-swarm/crates/public-inputs" }
 

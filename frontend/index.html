@@ -69,7 +69,8 @@
           style="background:#6a4caf;">
     Demo ML-DSA-STARK PoK
   </button>
-  <span class="small">— server generates a fresh ML-DSA-44
+  <span class="small">— server generates a fresh
+    <span data-scheme-key="name">ML-DSA-65</span>
     keypair, signs a random message, decodes the encoded
     <code>(pk, sig)</code> via FIPS 204 byte decoders + ExpandA +
     native NTTs, and produces a STARK PoK over the polynomial
@@ -255,7 +256,8 @@ const dobToDays = (yyyymmdd) => {
 };
 
 // Real-signature ML-DSA-STARK PoK demo: server generates a fresh
-// ML-DSA-44 keypair, signs the supplied message, computes the
+// keypair under the active ML-DSA scheme (window.SCHEME.scheme),
+// signs the supplied message, computes the
 // AIR's public inputs from the encoded `(pk, sig)` via FIPS 204
 // byte decoders + ExpandA + native NTTs, and produces a STARK PoK.
 // Browser receives `(pk, sig, proof)`, derives the same public
@@ -299,7 +301,7 @@ async function runMlDsaPokDemo() {
   const wall = performance.now() - tStart;
 
   out.innerHTML = v.verified
-    ? `<span class="ok">✓ Real ML-DSA-44 signature PoK verified</span>
+    ? `<span class="ok">✓ Real ${window.SCHEME.scheme} signature PoK verified</span>
        <br>Server keygen+sign: ${j.keygen_sign_ms.toFixed(1)} ms.
        Server STARK prove: ${j.prove_ms.toFixed(1)} ms.
        Browser WASM verify: ${v.verify_ms.toFixed(1)} ms (wall ${wall.toFixed(1)} ms).
@@ -310,7 +312,7 @@ async function runMlDsaPokDemo() {
        w_approx) in NTT domain.  The STARK proves the
        polynomial-arithmetic core of FIPS 204 §3 Algorithm 3 step 5
        (w'_approx_ntt = Â·NTT(z) − NTT(c)·NTT(t1·2^d)) holds for
-       the witness <code>z_ntt</code> that came from this real ML-DSA-44
+       the witness <code>z_ntt</code> that came from this real ${window.SCHEME.scheme}
        signature.`
     : `<span class="fail">Real ML-DSA-STARK PoK verification failed in WASM.</span>`;
 }
@@ -327,6 +329,59 @@ async function ping() {
   }
 }
 ping();
+
+// ─── Scheme metadata (active ML-DSA + STARK params) ───────────
+//
+// Fetches GET /service/scheme on page load and populates DOM
+// elements with `data-scheme-key="<name|pk_b|sig_b|level|hash|ext>"`
+// attributes.  Replaces previously-hardcoded "ML-DSA-44 / 1,312 B
+// / 2,420 B / Level 1" strings with values matching the active
+// (mldsa-N, sha3-N) Cargo feature pair.  Also exposed as
+// `window.SCHEME` for use in JS template literals.
+window.SCHEME = {
+  // Conservative fallbacks if /service/scheme can't be reached.
+  // Match the workspace default (mldsa-65) so the page is at least
+  // self-consistent in offline preview mode.
+  scheme: 'ML-DSA-65',
+  nist_level: 3,
+  public_key_bytes: 1952,
+  signature_bytes: 3309,
+  sha3_hash: 'SHA3-384',
+  ext_field: 'Fp6',
+  num_queries: 79,
+};
+function fmtBytes(n) {
+  // 1952 → "1,952"  (the locale-aware grouping is what the page
+  // previously hardcoded as "1,312" / "2,420" / "1,952" / "3,309").
+  return Number(n).toLocaleString('en-US');
+}
+function applySchemeToDom() {
+  const s = window.SCHEME;
+  document.querySelectorAll('[data-scheme-key]').forEach(el => {
+    const k = el.dataset.schemeKey;
+    switch (k) {
+      case 'name':       el.textContent = s.scheme; break;
+      case 'pk_b':       el.textContent = fmtBytes(s.public_key_bytes); break;
+      case 'sig_b':      el.textContent = fmtBytes(s.signature_bytes); break;
+      case 'level':      el.textContent = `Level ${s.nist_level}`; break;
+      case 'hash':       el.textContent = s.sha3_hash; break;
+      case 'ext':        el.textContent = s.ext_field; break;
+      case 'r':          el.textContent = String(s.num_queries); break;
+    }
+  });
+}
+async function fetchScheme() {
+  try {
+    const r = await fetch('/service/scheme');
+    if (r.ok) {
+      window.SCHEME = await r.json();
+    }
+  } catch (e) {
+    /* keep fallback */
+  }
+  applySchemeToDom();
+}
+fetchScheme();
 
 // Wire the ML-DSA-STARK PoK demo button.
 const mlDsaDemoBtn = $('ml-dsa-demo-btn');
@@ -559,11 +614,12 @@ $('reg-form').addEventListener('submit', async (ev) => {
 
 // Parallel ML-DSA-STARK income gate.  Same protocol shape as the
 // RSA-STARK path (`verifyIncomeLocked`), but the operator's
-// signing key is ML-DSA-44 (FIPS 204, NIST PQ category 2) and the
-// PoK is over a real ML-DSA signature (not the synthetic-from-nonce
-// demo path).  Browser verifies via WASM
+// signing key is the active ML-DSA scheme (window.SCHEME.scheme;
+// build-default ML-DSA-65 = NIST PQ category 3).  The PoK is over
+// a real ML-DSA signature (not the synthetic-from-nonce demo
+// path).  Browser verifies via WASM
 // `verify_ml_dsa_signature_pok_in_browser`, which runs both the
-// native ML-DSA-44 verify and the FRI proof check.
+// native ML-DSA verify and the FRI proof check.
 async function verifyIncomeLockedMlDsa(ev) {
   const userId = ev.currentTarget.getAttribute('data-user-id');
   const out = $('verify-income-result');
@@ -616,8 +672,10 @@ async function verifyIncomeLockedMlDsa(ev) {
     ? `<span class="ok">Service-attested verification ✓ (ML-DSA-STARK gate)</span>
        <br>Income STARK verifies AND the response carries:
        <ul class="small" style="margin:0.3em 0 0.3em 1.5em;">
-         <li>A real <strong>ML-DSA-44</strong> signature
-             (1,312 B pk, 2,420 B sig, FIPS 204 category 2 PQ)
+         <li>A real <strong data-scheme-key="name">ML-DSA-65</strong> signature
+             (<span data-scheme-key="pk_b">1,952</span> B pk,
+              <span data-scheme-key="sig_b">3,309</span> B sig,
+              FIPS 204 PQ <span data-scheme-key="level">Level 3</span>)
              over <code>signed_message = SHA3-256(nonce ‖
              stark_proof ‖ policy)</code>.</li>
          <li>A STARK PoK proving the polynomial-arithmetic core
@@ -625,7 +683,8 @@ async function verifyIncomeLockedMlDsa(ev) {
              (<code>w'_approx_ntt = Â·NTT(z) − NTT(c)·NTT(t1·2^d)</code>).</li>
        </ul>
        <span class="small">Browser ran <strong>both</strong>
-       checks: native ML-DSA-44 verify (closes the v1 STARK
+       checks: native <span data-scheme-key="name">ML-DSA-65</span>
+       verify (closes the v1 STARK
        soundness gap) and the STIR-based STARK PoK.
        Wall ${wall.toFixed(1)} ms;
        WASM ${v.verify_ms.toFixed(1)} ms; pk pin
@@ -634,7 +693,8 @@ async function verifyIncomeLockedMlDsa(ev) {
        layers stack: (a) STARK soundness — concrete NIST PQ
        Level 3, unconditional under STIR information-theoretic
        low-degree-test soundness + SHA-3 collision resistance
-       (FIPS 202); (b) ML-DSA-44 EUF-CMA — NIST PQ Level 1
+       (FIPS 202); (b) <span data-scheme-key="name">ML-DSA-65</span>
+       EUF-CMA — NIST PQ <span data-scheme-key="level">Level 3</span>
        (FIPS 204, lattice).  An exfiltrated DB without
        <code>sk_ml_dsa</code> cannot fabricate this PoK under
        either assumption.</span>`
@@ -765,8 +825,10 @@ async function verifyIncomeLockedMlDsaV17(ev) {
     ? `<span class="ok">Service-attested verification ✓ (v1.7 PQ-airtight gate)</span>
        <br>Income STARK verifies AND the response carries:
        <ul class="small" style="margin:0.3em 0 0.3em 1.5em;">
-         <li>A real <strong>ML-DSA-44</strong> signature
-             (1,312 B pk, 2,420 B sig, FIPS 204 category 2 PQ).</li>
+         <li>A real <strong data-scheme-key="name">ML-DSA-65</strong> signature
+             (<span data-scheme-key="pk_b">1,952</span> B pk,
+              <span data-scheme-key="sig_b">3,309</span> B sig,
+              FIPS 204 PQ <span data-scheme-key="level">Level 3</span>).</li>
          <li>A v1.7 STARK PoK enforcing in-circuit
              <em>three</em> properties of FIPS 204 §3 Algorithm 3:
              (a) the polynomial-arithmetic verify equation,
@@ -777,7 +839,8 @@ async function verifyIncomeLockedMlDsaV17(ev) {
              <code>l ∈ 0..L=4</code>.</li>
        </ul>
        <span class="small">Browser ran <strong>both</strong>
-       checks: native ML-DSA-44 verify (Layer 1, defense in depth)
+       checks: native <span data-scheme-key="name">ML-DSA-65</span>
+       verify (Layer 1, defense in depth)
        and the v1.7 STIR-based STARK PoK (Layer 2).
        Wall ${wall.toFixed(1)} ms;
        WASM ${v.verify_ms.toFixed(1)} ms; pk pin
