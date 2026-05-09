@@ -304,3 +304,99 @@ async fn service_scheme_works_in_pii_scenario_too() {
     ).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ─── /verify/income/ml_dsa_v2/:user_id (slow end-to-end test) ────
+
+/// Full `/verify/income/ml_dsa_v2` round-trip: register an adult-EU
+/// user (which runs the income STARK proof) and verify the resulting
+/// ML-DSA PoK natively via `mmiyc_verifier::ml_dsa_pok::verify_ml_dsa_signature_pok_v2`.
+///
+/// This test confirms the v2 plumbing all the way through: register
+/// → store income proof → server signs with active ML-DSA key →
+/// server runs v2 STARK PoK → client recovers (pk, sig, proof_pok)
+/// from JSON → native verify accepts.
+///
+/// **Slow** (~30–60 s at L1 / ~60–120 s at L3) because the register
+/// path does prove_income (RSA-2048 STARK) and the verify response
+/// does prove_ml_dsa_signature_pok_v2 (ML-DSA verify circuit STARK).
+/// Marked `#[ignore]`; run with `cargo test --release ... v2_round_trip
+/// -- --ignored --nocapture` to exercise.
+#[tokio::test]
+#[ignore]
+async fn verify_income_ml_dsa_v2_round_trip() {
+    use std::time::Instant;
+
+    let (router, _pool, _f) = fixture(Scenario::Proofs).await;
+
+    eprintln!("[v2-rt] register adult-EU body (this runs the income STARK)…");
+    let t0 = Instant::now();
+    let (status, body) = post_register(&router, &adult_eu_body()).await;
+    eprintln!("[v2-rt] register: {:?} in {:.1}s", status, t0.elapsed().as_secs_f64());
+    assert_eq!(status, StatusCode::CREATED, "register: {body}");
+    let user_id = body["user_id"].as_str().unwrap().to_string();
+
+    // Random 32-byte nonce binds this verify call.
+    let mut nonce = [0u8; 32];
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(&mut nonce);
+    let nonce_hex = hex::encode(nonce);
+
+    eprintln!("[v2-rt] POST /verify/income/ml_dsa_v2 (this runs the v2 ML-DSA PoK STARK)…");
+    let t0 = Instant::now();
+    let resp = router.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!("/verify/income/ml_dsa_v2/{}", user_id))
+            .header("content-type", "application/json")
+            .body(Body::from(json!({ "nonce_hex": nonce_hex }).to_string()))
+            .unwrap(),
+    ).await.unwrap();
+    eprintln!("[v2-rt] verify HTTP: {:?} in {:.1}s", resp.status(), t0.elapsed().as_secs_f64());
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Body shape: { verified, ml_dsa_pk_hex, signed_message_hex, sig_hex, proof_pok_hex }.
+    // The v2 PoK is ~2-6 MiB binary, hex-encoded ~4-12 MiB; the
+    // overall JSON can exceed 16 MiB at L3/L5.  Bump the cap to
+    // 128 MiB so all 3 NIST PQ Levels fit comfortably.
+    let bytes = to_bytes(resp.into_body(), 128 * 1024 * 1024).await.unwrap();
+    let v: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+    assert_eq!(v["verified"], json!(true), "income STARK must verify on honest body");
+    let pk_hex  = v["ml_dsa_pk_hex"].as_str().expect("ml_dsa_pk_hex");
+    let msg_hex = v["signed_message_hex"].as_str().expect("signed_message_hex");
+    let sig_hex = v["sig_hex"].as_str().expect("sig_hex");
+    let pok_hex = v["proof_pok_hex"].as_str().expect("proof_pok_hex");
+
+    let pk_bytes  = hex::decode(pk_hex).expect("pk hex");
+    let msg_bytes = hex::decode(msg_hex).expect("msg hex");
+    let sig_bytes = hex::decode(sig_hex).expect("sig hex");
+    let pok_bytes = hex::decode(pok_hex).expect("pok hex");
+
+    // Assert byte counts match the active scheme (sourced from
+    // /service/scheme to keep the assertion level-aware).
+    let scheme_resp = router.oneshot(
+        Request::builder().method("GET").uri("/service/scheme")
+            .body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    let scheme_bytes = to_bytes(scheme_resp.into_body(), 1024).await.unwrap();
+    let scheme: Value = serde_json::from_slice(&scheme_bytes).unwrap();
+    let exp_pk  = scheme["public_key_bytes"].as_u64().unwrap() as usize;
+    let exp_sig = scheme["signature_bytes"].as_u64().unwrap()  as usize;
+    assert_eq!(pk_bytes.len(),  exp_pk,  "pk bytes must match active scheme");
+    assert_eq!(sig_bytes.len(), exp_sig, "sig bytes must match active scheme");
+
+    // Native ML-DSA verify (Layer-1 sanity).
+    eprintln!("[v2-rt] native ML-DSA verify…");
+    mmiyc_server::ml_dsa::verify(&pk_bytes, &msg_bytes, &sig_bytes)
+        .expect("native ML-DSA verify must accept the server's signature");
+
+    // STARK PoK verify (the actual Layer-2 binding).
+    eprintln!("[v2-rt] verify_ml_dsa_signature_pok_v2 native (this runs FRI verify)…");
+    let t0 = Instant::now();
+    let result = mmiyc_verifier::ml_dsa_pok::verify_ml_dsa_signature_pok_v2(
+        &pk_bytes, &msg_bytes, &sig_bytes, &pok_bytes,
+    );
+    eprintln!("[v2-rt] STARK verify: {:?} in {:.2}s", result.is_ok(),
+              t0.elapsed().as_secs_f64());
+    assert!(result.is_ok(),
+        "v2 STARK PoK must verify on honest server output: {:?}", result.err());
+}
