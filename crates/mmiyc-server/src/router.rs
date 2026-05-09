@@ -58,6 +58,7 @@ pub fn build_router(state: AppState, static_dir: Option<std::path::PathBuf>) -> 
         .route("/verify/income/ml_dsa_v17/:user_id", post(verify_income_locked_ml_dsa_v17))
         .route("/verify/income/ml_dsa_v2/:user_id",  post(verify_income_locked_ml_dsa_v2))
         .route("/service/pubkey", get(service_pubkey))
+        .route("/service/scheme", get(service_scheme))
         .route("/service/ml_dsa_pok", post(ml_dsa_pok_demo))
         .with_state(state);
 
@@ -786,6 +787,56 @@ async fn service_pubkey(State(state): State<AppState>)
     ))?;
     let n_hex = hex::encode(sk.to_public_key().n().to_bytes_be());
     Ok(Json(ServicePubkey { n_hex }))
+}
+
+// ─── /service/scheme (active ML-DSA + STARK params) ────────────────
+
+/// Active scheme metadata returned by `GET /service/scheme`.
+///
+/// The frontend reads this on page load to render the correct
+/// scheme name and byte counts (replaces the previously-hardcoded
+/// "ML-DSA-44 / 1,312 B / 2,420 B" strings).
+#[derive(Debug, Serialize)]
+struct ServiceSchemeResponse {
+    /// FIPS-204 scheme name, e.g. "ML-DSA-44".
+    scheme: &'static str,
+    /// NIST PQ Level — 1, 3, or 5.
+    nist_level: u8,
+    /// Encoded verifying-key length (bytes).  1312 / 1952 / 2592.
+    public_key_bytes: usize,
+    /// Encoded signature length (bytes).  2420 / 3309 / 4627.
+    signature_bytes: usize,
+    /// Hash variant matching the active STARK level (sha3-256/384/512).
+    sha3_hash: &'static str,
+    /// FRI extension field — Fp6 (L1/L3) or Fp8 (L5).
+    ext_field: &'static str,
+    /// FRI query count — 54 (L1) / 79 (L3) / 105 (L5), Johnson regime.
+    num_queries: usize,
+}
+
+async fn service_scheme() -> Json<ServiceSchemeResponse> {
+    let nist_level = deep_ali::stark_level::NIST_LEVEL;
+    let scheme = deep_ali::ml_dsa::params::SCHEME_NAME;
+    let public_key_bytes = deep_ali::ml_dsa::params::PUBLIC_KEY_BYTES;
+    let signature_bytes  = deep_ali::ml_dsa::params::SIGNATURE_BYTES;
+    let num_queries = deep_ali::stark_level::NUM_QUERIES_LEVEL;
+    let sha3_hash = match nist_level {
+        1 => "SHA3-256",
+        3 => "SHA3-384",
+        5 => "SHA3-512",
+        _ => "SHA3-?",
+    };
+    let ext_field = if nist_level == 5 { "Fp8" } else { "Fp6" };
+
+    Json(ServiceSchemeResponse {
+        scheme,
+        nist_level,
+        public_key_bytes,
+        signature_bytes,
+        sha3_hash,
+        ext_field,
+        num_queries,
+    })
 }
 
 // ─── /verify/income/:user_id (RSA-STARK designated-verifier gate) ──

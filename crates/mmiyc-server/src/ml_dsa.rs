@@ -101,7 +101,7 @@ mod tests {
     #[cfg(feature = "mldsa-44")]
     const EXPECTED_SIG_BYTES: usize = 2420;
     #[cfg(feature = "mldsa-65")]
-    const EXPECTED_SIG_BYTES: usize = 3293;
+    const EXPECTED_SIG_BYTES: usize = 3309;  // FIPS 204 §3.5: 3309 not 3293
     #[cfg(feature = "mldsa-87")]
     const EXPECTED_SIG_BYTES: usize = 4627;
 

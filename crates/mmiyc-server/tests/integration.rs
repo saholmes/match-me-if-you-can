@@ -227,3 +227,80 @@ async fn pii_verify_unknown_user_returns_404() {
     assert_eq!(get_verify(&router, "age", id).await,     StatusCode::NOT_FOUND);
     assert_eq!(get_verify(&router, "country", id).await, StatusCode::NOT_FOUND);
 }
+
+// ─── /service/scheme ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn service_scheme_returns_active_metadata() {
+    // Confirms the `/service/scheme` endpoint returns scheme name,
+    // NIST level, and byte counts that match what the active
+    // (mldsa-N, sha3-N) Cargo feature pair selects.  Replaces the
+    // previously-hardcoded "ML-DSA-44 / 1,312 B / 2,420 B" strings
+    // in the frontend.
+    let (router, _pool, _f) = fixture(Scenario::Proofs).await;
+    let resp = router.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri("/service/scheme")
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = to_bytes(resp.into_body(), 1024).await.unwrap();
+    let body: Value = serde_json::from_slice(&bytes).expect("valid JSON");
+
+    // Must have all expected fields.
+    let scheme           = body["scheme"].as_str().expect("scheme is a string");
+    let nist_level       = body["nist_level"].as_u64().expect("nist_level is a number");
+    let public_key_bytes = body["public_key_bytes"].as_u64().expect("public_key_bytes is a number");
+    let signature_bytes  = body["signature_bytes"].as_u64().expect("signature_bytes is a number");
+    let sha3_hash        = body["sha3_hash"].as_str().expect("sha3_hash is a string");
+    let ext_field        = body["ext_field"].as_str().expect("ext_field is a string");
+    let num_queries      = body["num_queries"].as_u64().expect("num_queries is a number");
+
+    // Each (mldsa-N, sha3-N) feature pair fixes a specific row in
+    // the FIPS 204 / paper Table III matrix; assert against that.
+    match scheme {
+        "ML-DSA-44" => {
+            assert_eq!(nist_level, 1);
+            assert_eq!(public_key_bytes, 1312);
+            assert_eq!(signature_bytes, 2420);
+            assert_eq!(sha3_hash, "SHA3-256");
+            assert_eq!(ext_field, "Fp6");
+            assert_eq!(num_queries, 54);
+        }
+        "ML-DSA-65" => {
+            assert_eq!(nist_level, 3);
+            assert_eq!(public_key_bytes, 1952);
+            assert_eq!(signature_bytes, 3309);
+            assert_eq!(sha3_hash, "SHA3-384");
+            assert_eq!(ext_field, "Fp6");
+            assert_eq!(num_queries, 79);
+        }
+        "ML-DSA-87" => {
+            assert_eq!(nist_level, 5);
+            assert_eq!(public_key_bytes, 2592);
+            assert_eq!(signature_bytes, 4627);
+            assert_eq!(sha3_hash, "SHA3-512");
+            assert_eq!(ext_field, "Fp8");
+            assert_eq!(num_queries, 105);
+        }
+        other => panic!("unexpected scheme: {other}"),
+    }
+}
+
+#[tokio::test]
+async fn service_scheme_works_in_pii_scenario_too() {
+    // /service/scheme has no scenario gating; it exposes build-
+    // time metadata only.  Confirm it responds the same way under
+    // the PII fixture.
+    let (router, _pool, _f) = fixture(Scenario::Pii).await;
+    let resp = router.oneshot(
+        Request::builder()
+            .method("GET")
+            .uri("/service/scheme")
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}

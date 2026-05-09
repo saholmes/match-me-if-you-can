@@ -24,6 +24,11 @@ mldsa-87 = []
 mmiyc-air      = { path = "../mmiyc-air" }
 mmiyc-prover   = { path = "../mmiyc-prover" }
 mmiyc-verifier = { path = "../mmiyc-verifier" }
+# Direct read of `stark_level::*` and `ml_dsa::params::*` constants
+# for the `/service/scheme` endpoint.  Inherits the workspace
+# feature set (parallel + sha3-N + mldsa-N) so the constants match
+# the active build.
+deep_ali       = { workspace = true }
 
 axum       = { workspace = true }
 tokio      = { workspace = true }
