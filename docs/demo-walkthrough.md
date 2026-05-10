@@ -245,6 +245,79 @@ service-signed response.
 > support; the construction supports both with different
 > properties."*
 
+### Scenario 5c: terminology check — what "designated-verifier" actually means here
+
+A common misconception worth clearing up before someone asks:
+*"if the proof is stolen, can anyone run the proof, or only the
+designated verifier?"*
+
+**Answer: anyone can run a stolen proof.**  STARK proofs are
+publicly-verifiable by construction.  Hand a leaked proof to any
+verifier binary and it returns "yes, the math is valid, this user
+satisfied the predicate at registration".  The MMIYC construction
+does NOT make the proof itself non-transferable; it does NOT
+restrict who can run the math.  The "designated-verifier gate"
+label is loose — the real property is at a different layer.
+
+To be precise, two trust questions to keep separate:
+
+| Trust question | Answered by | Survives DB exfiltration? |
+|---|---|---|
+| *"Is the proof mathematically valid?"* | Anyone with a verifier (publicly verifiable math) | **Yes** — leaked proofs still verify forever |
+| *"Did the live service just attest this user is currently eligible?"* | Only the service (signed with `sk_rsa` / `sk_ml_dsa`) | **No** — attacker can't produce new attestations |
+
+The gate's value is at the **second** question, not the first.
+When a third party (a benefits portal, a tax-credit calculator,
+an age-gate) asks the service `/verify/income/<user>`, they're
+not asking "is the proof valid?" — they could check that
+themselves.  They're asking *"does the service, right now, with
+its identity behind it, vouch that this user is eligible?"*
+That second question requires the service's signing key, which
+the exfiltrated database does not contain.
+
+So the operational properties the construction actually
+provides under the catastrophic-breach assumption:
+
+1. **Bracketed leak, not exact-value leak.**  Leaked proofs
+   reveal predicates ("income ∈ band Y"), not exact values
+   ("£45 000").  Even with full DB + at-rest-key compromise.
+2. **Replay protection on live attestations.**  Each
+   `/verify/income/<id>` response is signed over a fresh
+   nonce.  An attacker holding leaked proofs cannot replay
+   them as a fresh service attestation, because the third
+   party calling the API specifies a new nonce.
+3. **Service-identity binding for newly-issued attestations.**
+   A third party trusting the service's published public key
+   can be sure a response came from the live service, not from
+   a stale snapshot or an impersonator.  The attacker can't
+   forge new attestations under the service's identity without
+   `sk_rsa`.
+
+What the construction does **not** provide:
+
+- **Non-transferability of proofs.**  Leaked proofs reveal what
+  they prove, forever.  If you want Alice to give Bob a proof
+  that Bob can verify but cannot show to anyone else, that's a
+  different cryptographic primitive (a proper designated-
+  verifier signature scheme like Jakobsson-Sako-Impagliazzo).
+  MMIYC does not implement that.
+- **Privacy of leaked proof contents.**  The bracketed
+  predicate is exposed.  An attacker learns "Alice's income is
+  in [£40 k, £100 k]"; they don't learn "£45 000".  That's the
+  privacy reduction — bracketed-leak rather than exact-value-
+  leak — but the bracket itself is exposed.
+- **Protection if the service itself is compromised.**  If
+  `sk_rsa` is also exfiltrated (in addition to the DB), all
+  bets are off.  The construction protects against DB-only
+  exfiltration; it does not protect against full-service
+  takeover.
+
+> **Lay summary**: *"Anyone can verify a stolen proof — the math
+> is public.  But only the live service can sign a fresh response
+> with its identity attached.  Third parties choosing to trust the
+> service's API instead of trusting random leaked proof bytes are
+> what the gate protects."*
+
 ---
 
 ## Part 6 — What the layered defence actually buys
