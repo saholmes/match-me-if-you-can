@@ -56,7 +56,7 @@ pub fn verify_age(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: false,
+        stir: deep_ali::use_stir_from_env(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
@@ -96,7 +96,7 @@ pub fn verify_country(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: false,
+        stir: deep_ali::use_stir_from_env(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
@@ -133,7 +133,7 @@ pub fn verify_income(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: false,
+        stir: deep_ali::use_stir_from_env(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };

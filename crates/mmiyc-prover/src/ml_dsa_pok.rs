@@ -241,7 +241,7 @@ pub fn prove_ml_dsa_signature_pok_v15(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: false,
+        stir: deep_ali::use_stir_from_env(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
@@ -317,7 +317,7 @@ pub fn prove_ml_dsa_signature_pok_v17(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: false,
+        stir: deep_ali::use_stir_from_env(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
@@ -715,7 +715,7 @@ pub fn prove_ml_dsa_pok(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: false,
+        stir: deep_ali::use_stir_from_env(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
