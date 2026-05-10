@@ -56,7 +56,12 @@ pub fn verify_age(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: deep_ali::use_stir_from_env(),
+        // Auto-detect LDT mode from the proof structure: WASM
+        // has no env access, so we cannot rely on
+        // `use_stir_from_env()` here.  `stir_coset_evals.is_some()`
+        // is true iff the prover ran STIR; this metadata is
+        // inherent to the proof bytes.
+        stir: proof.stir_coset_evals.is_some(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
@@ -96,7 +101,12 @@ pub fn verify_country(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: deep_ali::use_stir_from_env(),
+        // Auto-detect LDT mode from the proof structure: WASM
+        // has no env access, so we cannot rely on
+        // `use_stir_from_env()` here.  `stir_coset_evals.is_some()`
+        // is true iff the prover ran STIR; this metadata is
+        // inherent to the proof bytes.
+        stir: proof.stir_coset_evals.is_some(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
@@ -133,7 +143,12 @@ pub fn verify_income(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: deep_ali::use_stir_from_env(),
+        // Auto-detect LDT mode from the proof structure: WASM
+        // has no env access, so we cannot rely on
+        // `use_stir_from_env()` here.  `stir_coset_evals.is_some()`
+        // is true iff the prover ran STIR; this metadata is
+        // inherent to the proof bytes.
+        stir: proof.stir_coset_evals.is_some(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };

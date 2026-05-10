@@ -212,7 +212,11 @@ pub fn verify_ml_dsa_signature_pok_v15(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: deep_ali::use_stir_from_env(),
+        // Auto-detect LDT mode from the proof structure: WASM
+        // has no env access (`use_stir_from_env()` returns false
+        // unconditionally), so we infer from `stir_coset_evals.is_some()`
+        // which is true iff the prover ran STIR.
+        stir: proof_obj.stir_coset_evals.is_some(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
@@ -285,7 +289,8 @@ pub fn verify_ml_dsa_signature_pok_v17(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: deep_ali::use_stir_from_env(),
+        // Auto-detect LDT mode from proof (WASM-safe).
+        stir: proof_obj.stir_coset_evals.is_some(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
@@ -385,7 +390,8 @@ pub fn verify_ml_dsa_pok(
         seed_z: SEED_Z,
         coeff_commit_final: true,
         d_final: 1,
-        stir: deep_ali::use_stir_from_env(),
+        // Auto-detect LDT mode from proof (WASM-safe).
+        stir: proof.stir_coset_evals.is_some(),
         s0: NUM_QUERIES,
         public_inputs_hash: Some(pi_hash),
     };
