@@ -424,6 +424,77 @@ function hexToBytes(hex) {
   for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i*2, i*2+2), 16);
   return out;
 }
+// ─── Time-bounded validity helpers (Path A, see docs §5d) ──────
+//
+// Server returns `signed_at` and `valid_until` (unix seconds) on
+// every /verify/income/* response.  Both are bound INTO the SHA3
+// digest the gate signs, so an attacker cannot lie about them
+// without invalidating the signature.  The verifier (browser, here)
+// rejects responses where `now > valid_until` even if the signature
+// is mathematically valid — same logic as a 3-month KYC utility-
+// bill window.
+//
+// `window._mmiycSimulatedClockSkewSec` lets the breach demo
+// simulate "fast-forward 4 months" without touching the real clock
+// — the freshness check then uses (Date.now()/1000 + skew) as
+// "verifier's now".  Default 0 (no skew).
+window._mmiycSimulatedClockSkewSec = 0;
+
+function verifierNowSeconds() {
+    return Math.floor(Date.now() / 1000) + (window._mmiycSimulatedClockSkewSec | 0);
+}
+
+function formatUnix(unixSec) {
+    if (!unixSec) return '(none)';
+    return new Date(unixSec * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+function humaniseSeconds(seconds) {
+    const s = Math.abs(seconds);
+    if (s < 60)        return `${s}s`;
+    if (s < 3600)      return `${Math.round(s/60)} min`;
+    if (s < 86400)     return `${Math.round(s/3600)} hr`;
+    if (s < 86400*30)  return `${Math.round(s/86400)} days`;
+    return `${(s/86400/30).toFixed(1)} months`;
+}
+
+/// Returns an HTML span describing the freshness status of a
+/// /verify/income/* response.  Three states:
+///   - fresh:    "✓ valid for X more days"
+///   - skew-expired: simulated-clock is past valid_until — "⚠ expired"
+///   - real-expired:  real clock is past valid_until — "✗ expired"
+function formatFreshness(j) {
+    if (j.signed_at == null || j.valid_until == null) {
+        return '<span class="small">(no time-bounded validity field — old server build?)</span>';
+    }
+    const now = verifierNowSeconds();
+    const expired = now > j.valid_until;
+    const skewActive = window._mmiycSimulatedClockSkewSec > 0;
+    const ttlSec = j.valid_until - now;
+    const ageSec = now - j.signed_at;
+
+    const statusBadge = expired
+        ? `<span class="fail">${skewActive ? '⚠' : '✗'} response EXPIRED at verifier's clock</span>`
+        : `<span class="ok">✓ response is fresh — accepted by verifier policy</span>`;
+
+    const skewLine = skewActive
+        ? `<br><span class="small" style="color:#a8527d;"><strong>Simulated clock skew:</strong>
+              verifier's "now" is fast-forwarded by
+              ${humaniseSeconds(window._mmiycSimulatedClockSkewSec)}.</span>`
+        : '';
+
+    return `<div class="small" style="margin-top:0.5em;border-left:3px solid ${expired?'#a83232':'#1f8a70'};padding-left:0.7em;">
+        ${statusBadge}${skewLine}
+        <br><strong>signed_at:</strong> ${formatUnix(j.signed_at)}
+            (${humaniseSeconds(ageSec)} ago by verifier's clock)
+        <br><strong>valid_until:</strong> ${formatUnix(j.valid_until)}
+            (TTL ${expired ? '<strong>elapsed</strong>' : `<strong>${humaniseSeconds(ttlSec)} remaining</strong>`})
+        <br>Both fields are bound into the SHA3 digest the gate signs,
+        so an attacker cannot modify them without invalidating the
+        signature.
+    </div>`;
+}
+
 function bytesToHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -731,7 +802,8 @@ async function verifyIncomeLockedMlDsa(ev) {
        EUF-CMA — NIST PQ <span data-scheme-key="level">Level 3</span>
        (FIPS 204, lattice).  An exfiltrated DB without
        <code>sk_ml_dsa</code> cannot fabricate this PoK under
-       either assumption.</span>`
+       either assumption.</span>
+       ${formatFreshness(j)}`
     : `<span class="fail">ML-DSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
 }
 
@@ -798,7 +870,8 @@ async function verifyIncomeLockedMlDsaV15(ev) {
        <code>${j.ml_dsa_pk_hex.slice(0, 24)}…</code>.</span>
        <br><span class="small">Fallback target: NTT consistency
        (v1.7's third in-circuit property) is delegated to Layer 1
-       native ml_dsa::verify in this gate.</span>`
+       native ml_dsa::verify in this gate.</span>
+       ${formatFreshness(j)}`
     : `<span class="fail">v1.5 ML-DSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
 }
 
@@ -882,7 +955,8 @@ async function verifyIncomeLockedMlDsaV17(ev) {
        <br><span class="small">v1.7's cryptographic gain over v1.5:
        Layer 2 now also enforces the NTT chain in-circuit, leaving
        Layer 1's only remaining responsibility to be the SHAKE
-       rounds + hint check (those become v2's territory).</span>`
+       rounds + hint check (those become v2's territory).</span>
+       ${formatFreshness(j)}`
     : `<span class="fail">v1.7 ML-DSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
 }
 
@@ -961,8 +1035,13 @@ async function verifyIncomeLockedMlDsaV2(ev) {
        Algorithm 3 verify proven in-circuit by 10 STIR-STARK sub-proofs at
        NIST PQ Level 1 unconditional security (STIR information-theoretic
        low-degree-test soundness + SHA-3 collision resistance).  This is the
-       cryptographically strongest gate the demo offers.</span>`
+       cryptographically strongest gate the demo offers.</span>
+       ${formatFreshness(j)}`
     : `<span class="fail">v2 layer-1-free PoK failed to verify.  Treat as untrusted.</span>`;
+
+  // Cache the most recent v2 response so the breach demo can
+  // simulate "fast-forward 4 months" against this exact bundle.
+  window._mmiycLastV2Response = j;
 }
 
 // Exfiltration demo: an attacker has somehow obtained the
@@ -1054,6 +1133,43 @@ async function simulateExfiltration() {
         ? 'Asymmetry holds — leaked bytes verify mathematically, but the operator-bound oracle path is unforgeable without <code>sk_rsa</code>.'
         : 'Unexpected — see the values above.'}
     </p>
+
+    ${window._mmiycLastV2Response && window._mmiycLastV2Response.signed_at
+      ? `<hr style="border:none;border-top:1px dashed #999;margin:1em 0;">
+         <p class="small"><strong>③ Time-bounded validity (Path A,
+         see docs §5d).</strong>  The v2 response cached from your
+         last click of the gold button has <code>signed_at</code> /
+         <code>valid_until</code> bound into its signed digest.
+         Even if an attacker holds the response bytes, third-party
+         verifiers reject them past <code>valid_until</code>.
+         Simulate a verifier whose clock is fast-forwarded:</p>
+         <p class="small">
+           <button type="button" onclick="window._mmiycSimulatedClockSkewSec=0;simulateExfiltration();"
+                   style="margin-right:0.4em;">Now (real clock)</button>
+           <button type="button" onclick="window._mmiycSimulatedClockSkewSec=30*86400;simulateExfiltration();"
+                   style="margin-right:0.4em;">+ 30 days</button>
+           <button type="button" onclick="window._mmiycSimulatedClockSkewSec=89*86400;simulateExfiltration();"
+                   style="margin-right:0.4em;">+ 89 days (just inside window)</button>
+           <button type="button" onclick="window._mmiycSimulatedClockSkewSec=120*86400;simulateExfiltration();"
+                   style="background:#a8527d;">+ 120 days (past window)</button>
+         </p>
+         ${formatFreshness(window._mmiycLastV2Response)}
+         <p class="small">A leaked response remains <em>signed</em>
+         and <em>cryptographically valid</em> forever — the math
+         doesn't expire.  But a third-party verifier following the
+         deployment's freshness policy (90 days here) will reject
+         the leaked bytes once <code>now &gt; valid_until</code>,
+         the same way a tax-credit office rejects utility bills
+         older than 3 months.  This bounds the operational
+         lifetime of any breach.  Refresh the user's attestation by
+         re-clicking the gold button to issue a new
+         <code>(signed_at, valid_until)</code> pair under the
+         current epoch.</p>`
+      : `<p class="small" style="color:#666;">
+           (Click the gold <em>v2 layer-1-free gate</em> button
+           first to cache a response and unlock the time-bounded
+           validity scenario for this breach demo.)
+         </p>`}
   `;
 }
 
@@ -1138,7 +1254,8 @@ async function verifyIncomeLocked(ev) {
        would reject any forgery.  RSA signature itself is the
        STARK witness, hidden from the wire.  Note that the inner
        RSA-2048 layer is Shor-vulnerable; for a fully PQ-secure
-       gate use the green ML-DSA-STARK button below.`
+       gate use the green ML-DSA-STARK button below.
+       ${formatFreshness(j)}`
     : `<span class="fail">RSA-STARK PoK failed to verify.  Treat as untrusted.</span>`;
 }
 </script>

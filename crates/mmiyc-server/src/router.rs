@@ -352,6 +352,40 @@ fn mint_user_id(body: &str, ts: i64) -> String {
     hex::encode(&digest[..12])
 }
 
+// ─── Freshness window for /verify/income/* responses ─────────────
+//
+// Path A from the docs/demo-walkthrough §5d "time-bounded
+// validity" sub-section.  Every signed `/verify/income/*` response
+// carries a `(signed_at, valid_until)` pair that the third-party
+// verifier checks against its current clock.  After `valid_until`
+// the leaked response is operationally dead even though the
+// signature still verifies cryptographically.
+//
+// Default window: 90 days.  Matches typical real-world KYC freshness
+// (utility-bill-within-3-months).  Override via `MMIYC_FRESHNESS_DAYS`.
+//
+// Times are unix seconds (u64); embedded into the SHA3 binding hash
+// before the gate signs, so an attacker cannot lie about them
+// without invalidating the signature.
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
+}
+
+fn default_freshness_days() -> u64 {
+    std::env::var("MMIYC_FRESHNESS_DAYS")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(90)
+}
+
+/// Returns `(signed_at, valid_until)` unix-seconds for a fresh
+/// `/verify/income/*` response.  Both endpoints embed these into
+/// the binding hash and echo them in the response JSON.
+fn freshness_window() -> (u64, u64) {
+    let signed_at = now_unix_seconds();
+    let valid_until = signed_at + default_freshness_days() * 24 * 3600;
+    (signed_at, valid_until)
+}
+
 // ─── /verify/* ────────────────────────────────────────────────────
 
 async fn verify_age_h(
@@ -415,15 +449,27 @@ struct VerifyIncomeMlDsaResponse {
     verified: bool,
     /// Hex-encoded ML-DSA-44 public key (1 312 B).
     ml_dsa_pk_hex: Option<String>,
-    /// `SHA3-256(b"mmiyc/v1/verify-income-ml-dsa-binding" ‖ nonce
-    ///           ‖ stark_proof ‖ policy_json)`.  Signed by the
-    /// operator's ML-DSA secret key; the browser passes this same
-    /// message to `verify_ml_dsa_signature_pok_in_browser`.
+    /// `SHA3-256(b"mmiyc/v1/verify-income-ml-dsa-binding-v2" ‖ nonce
+    ///           ‖ signed_at ‖ valid_until ‖ stark_proof ‖
+    ///           policy_json)`.  Signed by the operator's ML-DSA
+    /// secret key; the browser passes this same message to
+    /// `verify_ml_dsa_signature_pok_in_browser`.  The freshness
+    /// times are bound INTO the digest so an attacker cannot
+    /// modify them without invalidating the signature.
     signed_message_hex: Option<String>,
     /// Hex-encoded ML-DSA-44 signature (2 420 B).
     sig_hex: Option<String>,
     /// Hex-encoded ML-DSA STARK PoK (~644 KiB).
     proof_pok_hex: Option<String>,
+    /// Unix seconds at which the service signed this response.
+    /// Bound into the binding hash; third-party verifier rejects
+    /// when `now > valid_until` per the docs/demo-walkthrough §5d
+    /// time-bounded-validity policy (Path A).
+    signed_at: Option<u64>,
+    /// Unix seconds after which this response is operationally
+    /// dead.  Default = `signed_at + 90 days`; override via
+    /// `MMIYC_FRESHNESS_DAYS` env var.
+    valid_until: Option<u64>,
 }
 
 async fn verify_income_locked_ml_dsa(
@@ -458,6 +504,8 @@ async fn verify_income_locked_ml_dsa(
             signed_message_hex: None,
             sig_hex: None,
             proof_pok_hex: None,
+            signed_at: None,
+            valid_until: None,
         }));
     }
 
@@ -465,10 +513,15 @@ async fn verify_income_locked_ml_dsa(
     // RSA-STARK gate but with a distinct domain-separation tag so
     // a captured RSA gate response can't be replayed in the
     // ML-DSA gate's transcript and vice-versa.
+    let (signed_at, valid_until) = freshness_window();
     let signed_message = {
         let mut h = Sha3_256::new();
-        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding");
+        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding-v2");
         h.update(&nonce);
+        h.update(b"|signed_at|");
+        h.update(&signed_at.to_le_bytes());
+        h.update(b"|valid_until|");
+        h.update(&valid_until.to_le_bytes());
         h.update(b"|proof|");
         h.update(&proof);
         h.update(b"|policy|");
@@ -496,6 +549,8 @@ async fn verify_income_locked_ml_dsa(
         signed_message_hex: Some(hex::encode(&signed_message)),
         sig_hex:            Some(hex::encode(&sig_bytes)),
         proof_pok_hex:      Some(hex::encode(&pok)),
+        signed_at:          Some(signed_at),
+        valid_until:        Some(valid_until),
     }))
 }
 
@@ -538,13 +593,20 @@ async fn verify_income_locked_ml_dsa_v15(
             signed_message_hex: None,
             sig_hex: None,
             proof_pok_hex: None,
+            signed_at: None,
+            valid_until: None,
         }));
     }
 
+    let (signed_at, valid_until) = freshness_window();
     let signed_message = {
         let mut h = Sha3_256::new();
-        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding");
+        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding-v2");
         h.update(&nonce);
+        h.update(b"|signed_at|");
+        h.update(&signed_at.to_le_bytes());
+        h.update(b"|valid_until|");
+        h.update(&valid_until.to_le_bytes());
         h.update(b"|proof|");
         h.update(&proof);
         h.update(b"|policy|");
@@ -566,6 +628,8 @@ async fn verify_income_locked_ml_dsa_v15(
         signed_message_hex: Some(hex::encode(&signed_message)),
         sig_hex:            Some(hex::encode(&sig_bytes)),
         proof_pok_hex:      Some(hex::encode(&pok)),
+        signed_at:          Some(signed_at),
+        valid_until:        Some(valid_until),
     }))
 }
 
@@ -614,13 +678,20 @@ async fn verify_income_locked_ml_dsa_v17(
             signed_message_hex: None,
             sig_hex: None,
             proof_pok_hex: None,
+            signed_at: None,
+            valid_until: None,
         }));
     }
 
+    let (signed_at, valid_until) = freshness_window();
     let signed_message = {
         let mut h = Sha3_256::new();
-        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding");
+        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding-v2");
         h.update(&nonce);
+        h.update(b"|signed_at|");
+        h.update(&signed_at.to_le_bytes());
+        h.update(b"|valid_until|");
+        h.update(&valid_until.to_le_bytes());
         h.update(b"|proof|");
         h.update(&proof);
         h.update(b"|policy|");
@@ -644,6 +715,8 @@ async fn verify_income_locked_ml_dsa_v17(
         signed_message_hex: Some(hex::encode(&signed_message)),
         sig_hex:            Some(hex::encode(&sig_bytes)),
         proof_pok_hex:      Some(hex::encode(&pok)),
+        signed_at:          Some(signed_at),
+        valid_until:        Some(valid_until),
     }))
 }
 
@@ -691,13 +764,20 @@ async fn verify_income_locked_ml_dsa_v2(
             signed_message_hex: None,
             sig_hex: None,
             proof_pok_hex: None,
+            signed_at: None,
+            valid_until: None,
         }));
     }
 
+    let (signed_at, valid_until) = freshness_window();
     let signed_message = {
         let mut h = Sha3_256::new();
-        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding");
+        h.update(b"mmiyc/v1/verify-income-ml-dsa-binding-v2");
         h.update(&nonce);
+        h.update(b"|signed_at|");
+        h.update(&signed_at.to_le_bytes());
+        h.update(b"|valid_until|");
+        h.update(&valid_until.to_le_bytes());
         h.update(b"|proof|");
         h.update(&proof);
         h.update(b"|policy|");
@@ -720,6 +800,8 @@ async fn verify_income_locked_ml_dsa_v2(
         signed_message_hex: Some(hex::encode(&signed_message)),
         sig_hex:            Some(hex::encode(&sig_bytes)),
         proof_pok_hex:      Some(hex::encode(&pok)),
+        signed_at:          Some(signed_at),
+        valid_until:        Some(valid_until),
     }))
 }
 
@@ -854,10 +936,13 @@ struct VerifyIncomeResponse {
     verified: bool,
     /// Hex-encoded RSA-2048 modulus (echoed for caller convenience).
     service_n_hex: String,
-    /// `SHA3-256(b"mmiyc/v1/verify-income-rsa-binding" ‖ nonce ‖
-    ///           proof_bytes ‖ policy_json)` — the message the
-    /// server signs.  Caller reconstructs this independently and
-    /// passes it to `verify_rsa_pok` along with `proof_pok_hex`.
+    /// `SHA3-256(b"mmiyc/v1/verify-income-rsa-binding-v2" ‖ nonce ‖
+    ///           signed_at ‖ valid_until ‖ proof_bytes ‖
+    ///           policy_json)` — the message the server signs.
+    /// Caller reconstructs this independently and passes it to
+    /// `verify_rsa_pok` along with `proof_pok_hex`.  The freshness
+    /// times are bound INTO the digest so an attacker cannot modify
+    /// them without invalidating the signature.
     signed_message_hex: Option<String>,
     /// RSA-2048 STARK PoK proof: a Fiat-Shamir NIZK that the
     /// server holds `sk_rsa` for `pk_rsa = (n, 65537)` AND signed
@@ -866,6 +951,12 @@ struct VerifyIncomeResponse {
     /// **only** when `verified` is true; otherwise `null` — the
     /// gate's "returns nil" mode.
     proof_pok_hex: Option<String>,
+    /// Unix seconds at which the service signed this response
+    /// (Path A time-bounded validity, see docs §5d).
+    signed_at: Option<u64>,
+    /// Unix seconds after which this response is operationally
+    /// dead.  Default = `signed_at + 90 days`.
+    valid_until: Option<u64>,
 }
 
 async fn verify_income_locked(
@@ -916,15 +1007,26 @@ async fn verify_income_locked(
             service_n_hex: n_hex,
             signed_message_hex: None,
             proof_pok_hex: None,
+            signed_at: None,
+            valid_until: None,
         }));
     }
 
-    // Bind to (nonce, stark_proof, policy_json) so a replay
-    // attempt can't reuse a stored response across requests.
+    // Bind to (nonce, signed_at, valid_until, stark_proof, policy_json)
+    // so (a) a replay attempt can't reuse a stored response across
+    // requests (nonce) and (b) the freshness times are bound INTO the
+    // signed digest so an attacker cannot lie about them without
+    // invalidating the signature (Path A time-bounded validity, see
+    // docs/demo-walkthrough.md §5d).
+    let (signed_at, valid_until) = freshness_window();
     let signed_message = {
         let mut h = Sha3_256::new();
-        h.update(b"mmiyc/v1/verify-income-rsa-binding");
+        h.update(b"mmiyc/v1/verify-income-rsa-binding-v2");
         h.update(&nonce);
+        h.update(b"|signed_at|");
+        h.update(&signed_at.to_le_bytes());
+        h.update(b"|valid_until|");
+        h.update(&valid_until.to_le_bytes());
         h.update(b"|proof|");
         h.update(&proof);
         h.update(b"|policy|");
@@ -948,6 +1050,8 @@ async fn verify_income_locked(
         service_n_hex: n_hex,
         signed_message_hex: Some(hex::encode(&signed_message)),
         proof_pok_hex: Some(hex::encode(&pok)),
+        signed_at: Some(signed_at),
+        valid_until: Some(valid_until),
     }))
 }
 

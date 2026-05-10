@@ -318,6 +318,104 @@ What the construction does **not** provide:
 > service's API instead of trusting random leaked proof bytes are
 > what the gate protects."*
 
+### Scenario 5d: time-bounded validity (Path A — physical-KYC parallel)
+
+> **What you're showing**: even though leaked proofs are
+> mathematically valid forever, the deployment can pin a
+> *freshness window* into every signed response — the same way
+> physical-world KYC requires utility bills within 3 months.
+> A leaked response remains cryptographically valid but
+> operationally rejected once the window passes.
+
+Every `/verify/income/*` response now carries two extra fields:
+
+- `signed_at`: unix-seconds when the service produced the
+  response.
+- `valid_until`: unix-seconds after which the response is
+  operationally dead (default `signed_at + 90 days`; override
+  via `MMIYC_FRESHNESS_DAYS` env var).
+
+Both fields are bound INTO the SHA3 binding hash that the gate
+signs, so an attacker holding a leaked response cannot modify the
+times without invalidating the signature.  The verifier (browser
+or any third party) checks `now ∈ [signed_at, valid_until]` as a
+policy gate after the cryptographic signature check.
+
+1. Make sure you've clicked the **gold v2 button** at least
+   once during this session (Part 4) — that response gets
+   cached at `window._mmiycLastV2Response` for the freshness
+   demo to use.
+2. Click the **purple breach-demo button** (Part 5).  The
+   result panel now has a third numbered section with a row
+   of clock-skew buttons:
+   - **Now (real clock)**: real verifier policy applies.
+   - **+ 30 days**: still inside the 90-day window, response
+     accepted.
+   - **+ 89 days (just inside window)**: edge case, accepted
+     by single-second margin.
+   - **+ 120 days (past window)**: simulated verifier rejects
+     the leaked response — the breach is now operationally
+     dead even though the signature is mathematically still
+     valid.
+3. The freshness panel updates colour-coded green→red as you
+   click through the simulated clock progressions.
+4. The narration text explains: *"A leaked response remains
+   signed and cryptographically valid forever — the math
+   doesn't expire.  But a third-party verifier following the
+   deployment's freshness policy (90 days here) will reject
+   the leaked bytes once `now > valid_until`, the same way a
+   tax-credit office rejects utility bills older than 3
+   months.  This bounds the operational lifetime of any
+   breach.  Refresh the user's attestation by re-clicking the
+   gold button to issue a new `(signed_at, valid_until)` pair
+   under the current epoch."*
+
+> **Lay explanation**: *"Cryptographic signatures don't expire
+> on their own.  But operationally, we don't trust an
+> attestation forever — a 5-year-old proof of income doesn't
+> tell us much about today.  So the deployment chooses a
+> freshness window — 90 days here, the same as a typical
+> KYC utility-bill window — and the verifier checks both the
+> math AND the timestamp.  This means a database breach has
+> a bounded operational shelf-life: once the window passes,
+> the leaked attestations are rejected.  The user can refresh
+> by simply asking the service for a new attestation, which
+> takes a few seconds."*
+
+**Operational implications worth flagging to the audience**:
+
+- **Bounded breach window**: combining time bounds with key
+  rotation gives forward-secrecy-like containment — leaked
+  attestations expire on schedule even if the signing key is
+  later rotated.
+- **Refresh cost**: each refresh is one server prove
+  (~3 s for RSA, ~25 s for v2 ML-DSA-65 on Mac).  The user
+  doesn't have to re-register, just re-attest.
+- **Multi-tier policies**: different verifiers can impose
+  *stricter* windows than the service's default (e.g. a
+  high-stakes medical verifier might want 7 days even though
+  the service issues for 90).  The verifier just enforces
+  their own `max_age` on top of the service's
+  `valid_until`.
+- **Clock synchronisation**: verifier and service must agree
+  on time within the window's tolerance.  NTP is good enough
+  for 90-day windows; for sub-second freshness use a
+  different construction (TSA-stamped, HSM-internal clocks).
+
+**What this does not protect against**:
+
+- A live attacker performing a fresh request before the
+  victim's session ends and replaying it within the window
+  (that's a phishing/MITM concern, not a breach concern).
+- A service with a compromised signing key that issues
+  fresh attestations under attacker control.  The window
+  protects against *static* DB exfiltration, not *active*
+  service compromise.
+- A clock-skew attack where the attacker can convince the
+  verifier their `now` is in the past (if the verifier's
+  clock is 200 days slow, the leaked response from 100 days
+  ago appears fresh).  Standard NTP defends against this.
+
 ---
 
 ## Part 6 — What the layered defence actually buys
