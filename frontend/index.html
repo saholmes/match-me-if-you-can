@@ -62,6 +62,23 @@
   actually persisted.
 </p>
 
+<p class="small">
+  <strong>Following the demo as a presenter or first-time visitor?</strong>
+  See <a href="https://github.com/anthropics/match-me-if-you-can/blob/main/docs/demo-walkthrough.md"><code>docs/demo-walkthrough.md</code></a>
+  in the repo for a step-by-step script with lay-language explanations
+  of each button and the catastrophic-breach scenario.  Suggested
+  flow: (1) register under scenario <em>PII (legacy)</em> to see what
+  a normal site stores; (2) register under <em>Proofs</em> to see
+  STARK proofs replace cleartext PII; (3) click the <em>Service-attested
+  check (RSA, classical)</em> button to see a third party verify
+  Alice's income band live; (4) click the gold <em>Service-attested
+  check (PQ, full FIPS 204 in-circuit)</em> button for the
+  cryptographically strongest gate (~25 s server prove); (5) click
+  the purple <em>Simulate database breach</em> button to see which
+  guarantees survive a catastrophic compromise of the at-rest
+  encryption key.
+</p>
+
 <div id="health" class="panel small">checking server …</div>
 
 <div id="ml-dsa-demo" class="panel small">
@@ -552,35 +569,52 @@ $('reg-form').addEventListener('submit', async (ev) => {
   // accepts the leaked proof bytes (the proof IS real), but the
   // designated-verifier PoK gate rejects forgeries.
   const lockedVerifyPanel = j.income_proof_bytes != null
-    ? `<p>
+    ? `<p class="small" style="margin-top:0.8rem;margin-bottom:0.3rem;">
+         <strong>Service-attested income-band check.</strong>
+         Each button below asks the live service "is this user's income
+         in the eligible band?" and signs the answer with the service's
+         own key.  Five buttons offer the same answer with different
+         signature constructions, ranked from classical/fast to
+         post-quantum/strongest.  Hover any button for details.  After
+         registering you can also simulate a catastrophic database
+         breach (purple button on the right) to see which guarantees
+         survive.
+       </p>
+       <p>
          <button type="button" id="verify-income-btn"
-                 data-user-id="${j.user_id}">
-           Verify income (RSA-STARK gate)
+                 data-user-id="${j.user_id}"
+                 title="RSA-STARK gate: classical service-attested check (RSA-2048).  Fast (~3-5 s server prove).  This is what current production systems migrating to STARK-based PII protection would deploy first.">
+           Service-attested check (RSA, classical)
          </button>
          <button type="button" id="verify-income-ml-dsa-btn"
                  data-user-id="${j.user_id}"
-                 style="background:#1f8a70;margin-left:0.5rem;">
-           Verify income (ML-DSA-STARK gate)
+                 style="background:#1f8a70;margin-left:0.5rem;"
+                 title="ML-DSA-STARK gate v1: synthetic post-quantum proof of knowledge of an ML-DSA signature.  Smaller in-circuit AIR than v2 (~2-3 s prove); does not prove the FIPS 204 verify step end-to-end in-circuit.">
+           Service-attested check (post-quantum, basic)
          </button>
          <button type="button" id="verify-income-ml-dsa-v15-btn"
                  data-user-id="${j.user_id}"
-                 style="background:#3a6f3a;margin-left:0.5rem;">
-           Verify income (v1.5 + norm bound)
+                 style="background:#3a6f3a;margin-left:0.5rem;"
+                 title="ML-DSA-STARK gate v1.5: extends v1 with response-polynomial norm-bound check (‖z‖∞ &lt; γ_1 - β) proven in-circuit.  Adds about 1-2 s prove time.">
+           Service-attested check (PQ, norm-bound check)
          </button>
          <button type="button" id="verify-income-ml-dsa-v17-btn"
                  data-user-id="${j.user_id}"
-                 style="background:#0f5e9c;margin-left:0.5rem;">
-           Verify income (v1.7 PQ-airtight gate)
+                 style="background:#0f5e9c;margin-left:0.5rem;"
+                 title="ML-DSA-STARK gate v1.7: extends v1.5 with NTT-consistency check (ẑ_l = NTT(z_l)) proven in-circuit.  ~3-5 s server prove.">
+           Service-attested check (PQ, NTT-consistency check)
          </button>
          <button type="button" id="verify-income-ml-dsa-v2-btn"
                  data-user-id="${j.user_id}"
-                 style="background:#b8860b;margin-left:0.5rem;">
-           Verify income (v2 layer-1-free gate)
+                 style="background:#b8860b;margin-left:0.5rem;"
+                 title="ML-DSA-STARK gate v2: full FIPS 204 §3 Algorithm 3 verify proven in-circuit by 10 STIR-STARK sub-proofs.  Cryptographically strongest gate.  ~25-30 s server prove on Apple Silicon, ~70-140 s on AWS depending on NIST PQ Level.">
+           Service-attested check (PQ, full FIPS 204 in-circuit)
          </button>
          ${window._mmiycLastIncomeProofHex
            ? `<button type="button" id="simulate-exfil-btn"
-                      style="background:#a8527d;margin-left:0.5rem;">
-                Simulate exfiltration: generic ✓ vs gate ✗
+                      style="background:#a8527d;margin-left:0.5rem;"
+                      title="Simulates a catastrophic database breach: encrypted-at-rest data is in the clear, but the service's signing key is NOT in the exfiltrated data.  Shows what the attacker can/cannot do with the leaked proofs.">
+                Simulate database breach: which guarantees survive?
               </button>` : ''}
        </p>
        <div id="verify-income-result" class="panel small"></div>`
